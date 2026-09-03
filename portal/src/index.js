@@ -24,6 +24,8 @@ import {
 } from './orchestrator.js'
 import { closeUserSockets, setupProxy } from './proxy.js'
 import { instanceUrl } from './routing.js'
+import { registerGatewayAdmin } from './gateway-admin.js'
+import { startGateway } from './gateway.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -200,7 +202,7 @@ fastify.post('/api/auth/register', async (req, reply) => {
       const instId = createInstanceRow({ userId, slug, containerName: containerName(slug), hostPort })
       return { userId, instId }
     })()
-    provision(result.instId).catch((err) => console.error('[provision]', err))
+    provision(result.instId, { setDefaultModel: true }).catch((err) => console.error('[provision]', err))
     clearRateLimit(RATE_POLICIES.registerAccount, username)
     const session = createSession(result.userId)
     setSessionCookie(reply, session.token)
@@ -377,6 +379,7 @@ fastify.post('/api/instance/stop', async (req, reply) => {
 })
 
 // ---- admin: settings -------------------------------------------------------
+registerGatewayAdmin(fastify, { requireAdmin, requireUser })
 
 fastify.get('/api/admin/settings', async (req, reply) => {
   if (!requireAdmin(req, reply)) return
@@ -564,6 +567,11 @@ function idleSweep() {
 }
 
 // ---- boot ------------------------------------------------------------------
+
+if (config.gatewayEnabled) {
+  const gateway = await startGateway()
+  fastify.addHook('onClose', async () => gateway.close())
+}
 
 fastify.listen({ port: config.port, host: config.host }, (err) => {
   if (err) {

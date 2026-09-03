@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { config } from './config.js'
+import { fileURLToPath } from 'node:url'
 
 const run = promisify(execFile)
 
@@ -52,7 +53,22 @@ export async function applyFirewall(network) {
   if (!/^\d+\.\d+\.\d+\.\d+\/\d+$/.test(subnet)) throw new Error('Docker network must have one IPv4 subnet')
   // This short-lived helper only changes rules for our dedicated subnet.
   // Tenant containers never receive NET_ADMIN, host networking, or a Docker socket.
+  const gatewayArgs = []
+  if (config.gatewayEnabled) {
+    if (!config.gatewayTenantUrl) {
+      const host = process.platform === 'win32' ? 'host.docker.internal' : network.IPAM.Config[0].Gateway
+      config.gatewayTenantUrl = `http://${host}:${config.gatewayPort}/v1`
+    }
+    const url = new URL(config.gatewayTenantUrl)
+    const { stdout } = await docker(['run', '--rm', '--network', config.instanceNetwork,
+      '--entrypoint', 'node', config.image, '-e',
+      'require("node:dns").lookup(process.argv[1],{family:4},(e,a)=>{if(e)process.exit(1);console.log(a)})', url.hostname])
+    const ip = stdout.trim()
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) throw new Error('Cannot resolve tenant gateway address')
+    gatewayArgs.push(ip, String(config.gatewayPort))
+  }
   await docker(['run', '--rm', '--network', 'host', '--user', '0:0',
     '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--security-opt', 'no-new-privileges',
-    '--read-only', '--entrypoint', '/bin/bash', config.image, '/opt/dsh/tenant-firewall.sh', subnet])
+    '--read-only', '-v', `${fileURLToPath(new URL('../../image/tenant-firewall.sh', import.meta.url))}:/opt/dsh/tenant-firewall.sh:ro`,
+    '--entrypoint', '/bin/bash', config.image, '/opt/dsh/tenant-firewall.sh', subnet, ...gatewayArgs])
 }

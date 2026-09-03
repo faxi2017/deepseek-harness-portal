@@ -299,3 +299,11 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .pw-toggle:hover { color: var(--text); background: var(--surface-2); }
 .pw-toggle .icon { width: 16px; height: 16px; }
+/* Model gateway follows the existing admin panels and tables. */
+.gateway-model-checks { border: 1px solid #dce2eb; border-radius: 8px; padding: 12px; }
+.gateway-model-checks .check { margin: 8px 0; }
+.gateway-filter { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
+.gateway-filter label { display: grid; gap: 6px; }
+.gateway-filter input { padding: 8px; border: 1px solid #dce2eb; border-radius: 6px; }
+.gateway-summary { border-top: 1px solid #dce2eb; margin-top: 20px; padding-top: 12px; }
+#panel-gateway h3 { margin: 28px 0 12px; }

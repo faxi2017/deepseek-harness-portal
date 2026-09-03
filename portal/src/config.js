@@ -61,6 +61,11 @@ export const config = {
   sessionTouchIntervalMs: num('SESSION_TOUCH_INTERVAL_MS', 60 * 1000),
 
   dataDir: process.env.DATA_DIR ?? join(root, 'data'),
+  gatewayEnabled: bool('MODEL_GATEWAY_ENABLED', false),
+  gatewayPort: num('MODEL_GATEWAY_PORT', 7999),
+  gatewayHost: process.env.MODEL_GATEWAY_HOST ?? '0.0.0.0',
+  gatewayTenantUrl: process.env.MODEL_GATEWAY_TENANT_URL ?? '',
+  bifrostUrl: process.env.BIFROST_URL ?? 'http://127.0.0.1:14000',
   image: process.env.DSH_IMAGE ?? '',
   dockerCommandTimeoutMs: num('DOCKER_COMMAND_TIMEOUT_MS', 60 * 1000),
   instanceRouting: process.env.INSTANCE_ROUTING ?? 'ports',
@@ -109,6 +114,27 @@ export const config = {
 }
 
 export function validateConfig() {
+  if (config.gatewayEnabled) {
+    if (!Number.isInteger(config.gatewayPort) || config.gatewayPort < 1024 || config.gatewayPort > 65535
+        || config.gatewayPort === config.port
+        || (config.gatewayPort >= config.portRangeStart && config.gatewayPort <= config.portRangeEnd)
+        || (config.instanceRouting === 'ports' && config.gatewayPort >= config.instancePortStart
+          && config.gatewayPort <= config.instancePortStart + config.portRangeEnd - config.portRangeStart)) {
+      throw new Error('MODEL_GATEWAY_PORT must not overlap Portal or tenant ports')
+    }
+    const upstream = new URL(config.bifrostUrl)
+    if (!['http:', 'https:'].includes(upstream.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(upstream.hostname)
+        || upstream.username || upstream.password || upstream.search || upstream.hash || upstream.pathname !== '/') {
+      throw new Error('BIFROST_URL must be a host loopback origin')
+    }
+    if (config.gatewayTenantUrl) {
+      const tenantUrl = new URL(config.gatewayTenantUrl)
+      if (tenantUrl.protocol !== 'http:' || Number(tenantUrl.port) !== config.gatewayPort || tenantUrl.pathname !== '/v1'
+          || tenantUrl.username || tenantUrl.password || tenantUrl.search || tenantUrl.hash) {
+        throw new Error('MODEL_GATEWAY_TENANT_URL must use the gateway port and /v1 path')
+      }
+    }
+  }
   const positiveMs = [
     ['OTP_TTL_MS', config.otpTtlMs],
     ['SESSION_ABSOLUTE_TTL_MS', config.sessionAbsoluteTtlMs],

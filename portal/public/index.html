@@ -90,6 +90,9 @@
         <button class="nav-item" data-tab="settings">
           <span class="nav-icon" data-icon="sliders"></span> 平台设置
         </button>
+        <button class="nav-item" data-tab="gateway">
+          <span class="nav-icon" data-icon="key"></span> 模型网关
+        </button>
       </nav>
       <div class="sidebar-foot">
         <button class="nav-item" id="profile-btn">
@@ -125,6 +128,9 @@
           </button>
           <button class="nav-item" data-tab="settings">
             <span class="nav-icon" data-icon="sliders"></span> 平台设置
+          </button>
+          <button class="nav-item" data-tab="gateway">
+            <span class="nav-icon" data-icon="key"></span> 模型网关
           </button>
         </div>
         <button class="nav-item" id="mobile-profile-btn">
@@ -164,7 +170,8 @@
                   <span class="nav-icon" data-icon="play"></span> 进入工作空间
                 </a>
               </div>
-              <p class="hint">请在自己的 DSH 工作空间中，通过“设置 → 模型”配置 DeepSeek API 密钥。密钥仅保存在你的实例中。实例空闲时会自动停止，再次进入时自动启动。</p>
+              <p class="hint">可在 DSH“设置 → 模型”添加自己的模型和密钥。个人模型与平台模型并存，个人模型不占平台额度。实例空闲时会自动停止，再次进入时自动启动。</p>
+              <div id="my-gateway" class="gateway-summary"></div>
             </div>
           </div>
         </section>
@@ -208,6 +215,30 @@
               <button class="btn btn-primary" type="submit">保存设置</button>
             </form>
             <p id="settings-msg" class="form-msg"></p>
+          </div>
+          <div class="panel hidden" id="panel-gateway">
+            <div class="panel-head"><h2>模型网关</h2><button class="btn btn-primary" id="gateway-add-model">添加模型</button></div>
+            <p id="gateway-status" class="hint" role="status">正在加载…</p>
+            <div id="gateway-models"></div>
+            <h3>新用户默认额度</h3>
+            <form id="gateway-defaults" class="form form-narrow">
+              <label class="check"><input type="checkbox" name="enabled" /> 启用平台模型服务</label>
+              <label class="check"><input type="checkbox" name="defaultEnabled" /> 新注册用户自动分配平台模型</label>
+              <div class="field"><label for="gateway-default-quota">每日 Token 限额（0 为禁止调用）</label><input id="gateway-default-quota" name="dailyTokens" type="number" min="0" max="1000000000" step="1" required /></div>
+              <fieldset class="gateway-model-checks"><legend>默认可用模型</legend><div id="gateway-default-models"></div></fieldset>
+              <button type="submit" class="btn btn-primary">保存默认配置</button>
+              <p class="hint">默认配置只对之后首次分配的用户生效。已有用户请在下表单独设置。</p>
+            </form>
+            <h3>用户模型与额度</h3>
+            <p class="hint">北京时间每天 00:00 重置，输入 + 输出 Token 合计。调用前预留额度，结束后按实际用量结算；中断且无用量回执时保留预估扣减。平台模型当前支持文本和工具调用。</p>
+            <div id="gateway-users"></div>
+            <h3>用量统计</h3>
+            <form id="gateway-usage-filter" class="gateway-filter">
+              <label>开始日期 <input name="from" type="date" required /></label>
+              <label>结束日期 <input name="to" type="date" required /></label>
+              <button class="btn btn-ghost" type="submit">查询</button>
+            </form>
+            <div id="gateway-usage"></div>
           </div>
         </section>
       </main>

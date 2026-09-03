@@ -204,7 +204,7 @@ export async function waitHealthy(hostPort, timeoutMs) {
 }
 
 /** Provision one instance under a per-container lock. */
-export async function provision(instanceId) {
+export async function provision(instanceId, { setDefaultModel = false } = {}) {
   const initial = getInstanceById(instanceId)
   if (!initial) return
   const name = containerName(initial.slug)
@@ -226,6 +226,11 @@ export async function provision(instanceId) {
       }
       if (healthy) {
         updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+        if (config.gatewayEnabled) {
+          const { syncDsh } = await import('./gateway-dsh.js')
+          // Configuration failure is visible in admin; it must not break a healthy DSH.
+          await syncDsh(inst.user_id, { initial: true, setDefault: setDefaultModel }).catch(() => {})
+        }
       } else {
         await stopContainerUnlocked(name)
         updateInstanceUnlessDeleting(inst.id, { status: 'stopped', error: 'health check timed out' })

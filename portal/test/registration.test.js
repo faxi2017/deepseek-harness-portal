@@ -119,3 +119,24 @@ for (const contentType of ['application/json', 'application/x-www-form-urlencode
     assert.equal((await logout(csrfToken)).status, 303)
   })
 }
+
+test('gateway admin routes retain session, role, origin and CSRF protection; users see only their own allowance', async () => {
+  const login = await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })
+  const aliceCookie = login.headers.get('set-cookie').split(';')[0]
+  const aliceSession = await login.json()
+  const adminLogin = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminSession = await adminLogin.json()
+  const id = getUserByUsername('alice').id
+  const path = `/api/admin/gateway/users/${id}`
+  const policy = { enabled: false, dailyTokens: 100, models: [] }
+  assert.equal((await fetch(origin + '/api/admin/gateway')).status, 401)
+  assert.equal((await post(path, policy, { cookie: aliceCookie, 'x-csrf-token': aliceSession.csrfToken })).status, 403)
+  assert.equal((await post(path, policy, { cookie: adminCookie })).status, 403)
+  assert.equal((await post(path, policy, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken, origin: 'http://other.example' })).status, 403)
+  assert.equal((await post(path, policy, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken })).status, 200)
+  const self = await fetch(origin + '/api/gateway/me?userId=1', { headers: { cookie: aliceCookie } }).then((r) => r.json())
+  assert.equal(self.userId, id)
+  assert.equal(self.dailyTokens, 100)
+  assert.equal(self.secret, undefined)
+})

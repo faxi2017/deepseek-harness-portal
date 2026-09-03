@@ -12,6 +12,16 @@ for destination in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16
   add DOCKER-USER -s "$subnet" -d "$destination" -j REJECT
 done
 add INPUT -s "$subnet" -j REJECT
+# Only the authenticated model listener is reachable; Portal, Bifrost management
+# and all other host/private-network services retain the existing isolation.
+if [ -n "${2:-}" ]; then
+  gateway_ip="$2"
+  gateway_port="${3:?gateway port required}"
+  [[ "$gateway_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+  [[ "$gateway_port" =~ ^[0-9]+$ ]] || exit 1
+  add INPUT -s "$subnet" -d "$gateway_ip" -p tcp --dport "$gateway_port" -j ACCEPT
+  add DOCKER-USER -s "$subnet" -d "$gateway_ip" -p tcp --dport "$gateway_port" -j ACCEPT
+fi
 # Permit replies to connections initiated by Portal on the host.
 add INPUT -s "$subnet" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 add DOCKER-USER -s "$subnet" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN

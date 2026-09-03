@@ -200,11 +200,13 @@ function setAdminTab(tab) {
   $('#panel-instances').classList.toggle('hidden', tab !== 'instances')
   $('#panel-users').classList.toggle('hidden', tab !== 'users')
   $('#panel-settings').classList.toggle('hidden', tab !== 'settings')
-  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置' }
+  $('#panel-gateway').classList.toggle('hidden', tab !== 'gateway')
+  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关' }
   $('#topbar-title').textContent = titles[tab] || '概览'
   if (tab === 'instances') renderInstances()
   else if (tab === 'users') renderUsers()
   else if (tab === 'settings') renderSettings()
+  else if (tab === 'gateway') renderGateway()
 }
 
 // ---- auth ----
@@ -324,6 +326,7 @@ async function renderUser() {
     $('#i-active').textContent = relTime(instance.last_active)
     $('#i-error').textContent = instance.error ? errorMessage(instance.error) : ''
     $('#i-error').style.display = instance.error ? '' : 'none'
+    renderMyGateway()
   } catch (err) {
     $('#instance-empty').textContent = err.message
   }
@@ -510,7 +513,125 @@ $('#search-users').addEventListener('input', drawUsers)
 $$('#admin-nav .nav-item, #mobile-admin-nav .nav-item').forEach((n) => n.addEventListener('click', () => setAdminTab(n.dataset.tab)))
 $('#profile-btn').addEventListener('click', openProfile)
 $('#mobile-profile-btn').addEventListener('click', openProfile)
-$('#refresh-btn').addEventListener('click', () => { boot() })
+$('#refresh-btn').addEventListener('click', () => {
+  if (me?.role === 'admin' && !$('#panel-gateway').classList.contains('hidden')) { renderGateway(); return }
+  boot()
+})
+
+// ---- model gateway ----
+let gatewayCache = null
+const exactTokens = (n) => Number(n ?? 0).toLocaleString('zh-CN')
+function gatewayChecks(models, selected = []) {
+  return models.map((m) => `<label class="check"><input type="checkbox" name="models" value="${escapeHtml(m.id)}" ${selected.includes(m.id) ? 'checked' : ''} /> ${escapeHtml(m.name)}${m.enabled ? '' : '（停用）'}</label>`).join('') || '<p class="hint">请先添加模型。</p>'
+}
+async function renderGateway() {
+  try {
+    const data = await api('/api/admin/gateway')
+    gatewayCache = data
+    $('#gateway-status').textContent = !data.available ? '模型网关服务尚未部署。请按部署文档启动 Bifrost 并启用模型入口。'
+      : `${data.engine} · ${data.healthy ? '网关连接正常' : '网关连接异常'} · ${data.enabled ? '平台模型已启用' : '平台模型已停用'} · ${data.day}`
+    $('#gateway-defaults').elements.enabled.checked = data.enabled
+    $('#gateway-defaults').elements.defaultEnabled.checked = data.defaults.enabled
+    $('#gateway-default-quota').value = data.defaults.dailyTokens
+    $('#gateway-default-models').innerHTML = gatewayChecks(data.models, data.defaults.models)
+    $('#gateway-models').innerHTML = data.models.length ? `<div class="table-wrap"><table><thead><tr><th>模型</th><th>接口地址</th><th>状态</th><th>操作</th></tr></thead><tbody>${data.models.map((m) => `<tr><td>${escapeHtml(m.name)}<div class="hint">${escapeHtml(m.upstream_model)}</div></td><td class="cell-mono">${escapeHtml(m.base_url)}</td><td>${m.sync_error ? escapeHtml(m.sync_error) : m.enabled ? '已启用' : '已停用'}<div class="hint">密钥${m.hasKey ? '已保存' : '未配置'}</div></td><td><div class="cell-actions"><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="edit">编辑</button><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="sync">重试同步</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">尚未添加平台模型。</p>'
+    $('#gateway-users').innerHTML = data.users.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>可用模型</th><th>今日用量 / 限额</th><th>配置状态</th><th>操作</th></tr></thead><tbody>${data.users.map((u) => `<tr><td>${escapeHtml(u.username)}<div class="hint">${u.enabled ? '已启用' : '未启用'}</div></td><td>${u.models.map((id) => escapeHtml(data.models.find((m) => m.id === id)?.name ?? id)).join('<br>') || '—'}</td><td>${exactTokens(u.chargedTokens)} / ${exactTokens(u.dailyTokens)}<div class="hint">预留 ${exactTokens(u.reservedTokens)} · 可用 ${exactTokens(u.remainingTokens)}</div></td><td>${u.syncError ? escapeHtml(u.syncError) : u.syncedAt ? '已下发' : '尚未下发'}</td><td><button class="btn btn-ghost btn-sm" data-policy="${u.id}">配置</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">注册用户后可在此分配模型和额度。</p>'
+    const form = $('#gateway-usage-filter')
+    if (!form.elements.from.value) form.elements.from.value = new Date(Date.parse(data.day) - 29 * 86400000).toISOString().slice(0, 10)
+    if (!form.elements.to.value) form.elements.to.value = data.day
+    await renderGatewayUsage()
+  } catch (err) { $('#gateway-status').textContent = err.message }
+}
+async function renderGatewayUsage() {
+  try {
+    const form = $('#gateway-usage-filter')
+    const data = await api(`/api/admin/gateway/usage?from=${encodeURIComponent(form.elements.from.value)}&to=${encodeURIComponent(form.elements.to.value)}`)
+    $('#gateway-usage').innerHTML = data.rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>用户 / 模型</th><th>输入 Token</th><th>输出 Token</th><th>扣减 / 预留</th><th>调用 / 异常</th></tr></thead><tbody>${data.rows.map((r) => `<tr><td>${escapeHtml(r.day)}</td><td>${escapeHtml(r.username ?? '已删除用户')}<div class="hint">${escapeHtml(r.modelName ?? r.modelId)}</div></td><td>${exactTokens(r.inputTokens)}</td><td>${exactTokens(r.outputTokens)}</td><td>${exactTokens(r.chargedTokens)} / ${exactTokens(r.reservedTokens)}</td><td>${r.requests}<div class="hint">失败 ${r.failedRequests} · 待核实 ${r.uncertainRequests}</div></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">所选日期暂无模型调用。</p>'
+  } catch (err) { $('#gateway-usage').textContent = err.message }
+}
+function editGatewayModel(id) {
+  const m = gatewayCache?.models.find((row) => row.id === id)
+  openModal({ title: m ? '编辑平台模型' : '添加平台模型', body: `<form class="form" id="gateway-model-form">
+    <div class="field"><label for="gm-name">显示名称</label><input id="gm-name" name="name" required value="${escapeHtml(m?.name ?? '')}" /></div>
+    <div class="field"><label for="gm-model">上游模型 ID</label><input id="gm-model" name="upstreamModel" required value="${escapeHtml(m?.upstream_model ?? '')}" placeholder="MiniMax-M3" /></div>
+    <div class="field"><label for="gm-url">接口基础地址（支持兼容 OpenAI 的服务）</label><input id="gm-url" name="baseUrl" required value="${escapeHtml(m?.base_url ?? '')}" placeholder="https://example.com/v1" /></div>
+    <div class="field"><label for="gm-key">API Key${m ? '（留空保留现有密钥）' : ''}</label><input id="gm-key" name="apiKey" type="password" autocomplete="new-password" /></div>
+    <div class="field"><label for="gm-output">单次最大输出 Token</label><input id="gm-output" name="maxOutputTokens" type="number" min="1" max="65536" required value="${m?.max_output_tokens ?? 4096}" /></div>
+    <label class="check"><input name="enabled" type="checkbox" ${m?.enabled === 0 ? '' : 'checked'} /> 启用模型</label>
+    <p class="hint">密钥保存在服务端，子用户只获得平台凭证。更改显示名称或输出上限后，可重新下发到用户 DSH。</p>
+    <p id="gateway-modal-msg" class="form-msg" role="alert"></p></form>`, footer: '<button class="btn btn-primary" id="gateway-model-save">保存并同步</button>' })
+  $('#gateway-model-save').addEventListener('click', async () => {
+    const fd = new FormData($('#gateway-model-form'))
+    try {
+      const result = await withButtonLoading($('#gateway-model-save'), '正在保存…', () => api('/api/admin/gateway/models', { method: 'POST', body: {
+        ...(m ? { id: m.id } : {}), name: fd.get('name'), upstreamModel: fd.get('upstreamModel'), baseUrl: fd.get('baseUrl'),
+        apiKey: fd.get('apiKey'), maxOutputTokens: Number(fd.get('maxOutputTokens')), enabled: fd.get('enabled') === 'on',
+      } }))
+      $('#gm-key').value = ''
+      closeModal(); await renderGateway()
+      toast(result.model.sync_error || '模型已保存并同步', result.model.sync_error ? 'err' : 'ok')
+    } catch (err) { $('#gateway-modal-msg').textContent = err.message }
+  })
+}
+function editGatewayPolicy(id) {
+  const u = gatewayCache.users.find((row) => String(row.id) === id)
+  if (!u) return
+  openModal({ title: `模型配置：${u.username}`, body: `<form id="gateway-policy-form" class="form">
+    <label class="check"><input name="enabled" type="checkbox" ${u.enabled ? 'checked' : ''} /> 允许使用平台模型</label>
+    <div class="field"><label for="gp-quota">每日 Token 限额（0 为禁止调用）</label><input id="gp-quota" name="dailyTokens" type="number" min="0" max="1000000000" value="${u.dailyTokens}" /></div>
+    <fieldset class="gateway-model-checks"><legend>可用模型</legend>${gatewayChecks(gatewayCache.models, u.models)}</fieldset>
+    <label class="check"><input name="setDefault" type="checkbox" /> 下发时将第一个平台模型设为 DSH 默认</label>
+    <p class="hint">保存权限立即生效，不清空今日用量。下发只更新“平台模型”，保留个人模型、密钥和插件；DSH 需要处于运行状态。</p>
+    <button type="button" class="btn btn-ghost btn-sm" id="gateway-rotate">重置此用户的平台凭证</button>
+    <p id="gateway-policy-msg" class="form-msg" role="alert"></p></form>`,
+    footer: '<button class="btn btn-ghost" id="gateway-policy-save">仅保存权限</button><button class="btn btn-primary" id="gateway-policy-sync">保存并下发</button>' })
+  for (const sync of [false, true]) $(sync ? '#gateway-policy-sync' : '#gateway-policy-save').addEventListener('click', async (e) => {
+    const fd = new FormData($('#gateway-policy-form'))
+    try {
+      await withButtonLoading(e.currentTarget, '正在处理…', async () => {
+        await api(`/api/admin/gateway/users/${id}`, { method: 'POST', body: { enabled: fd.get('enabled') === 'on', dailyTokens: Number(fd.get('dailyTokens')), models: fd.getAll('models') } })
+        if (sync) await api(`/api/admin/gateway/users/${id}/sync`, { method: 'POST', body: { setDefault: fd.get('setDefault') === 'on' } })
+      })
+      closeModal(); renderGateway(); toast(sync ? '权限已保存，模型已下发' : '权限已保存', 'ok')
+    } catch (err) { $('#gateway-policy-msg').textContent = err.message }
+  })
+  $('#gateway-rotate').addEventListener('click', async (e) => {
+    try {
+      await withButtonLoading(e.currentTarget, '正在重置…', () => api(`/api/admin/gateway/users/${id}/rotate`, { method: 'POST' }))
+      $('#gateway-policy-msg').textContent = '原凭证已失效。请点击“保存并下发”更新 DSH 中的平台凭证。'
+    } catch (err) { $('#gateway-policy-msg').textContent = err.message }
+  })
+}
+async function renderMyGateway() {
+  try {
+    const p = await api('/api/gateway/me')
+    $('#my-gateway').innerHTML = `<h3>我的平台模型</h3><p>${!p.gatewayEnabled ? '平台模型服务未启用。' : !p.enabled ? '管理员尚未分配平台模型。' : `${p.models.map((m) => escapeHtml(m.name)).join('、')} · 今日已用 ${exactTokens(p.chargedTokens)} / ${exactTokens(p.dailyTokens)} Token · 预留 ${exactTokens(p.reservedTokens)}`}</p>${p.enabled && p.gatewayEnabled ? '<button class="btn btn-ghost btn-sm" id="my-gateway-sync">更新平台模型配置</button>' : ''}<p class="hint">${escapeHtml(p.syncError || '个人模型用量不计入平台额度。')}</p>`
+    $('#my-gateway-sync')?.addEventListener('click', async (e) => {
+      try { await withButtonLoading(e.currentTarget, '正在更新…', () => api('/api/gateway/me/sync', { method: 'POST' })); toast('平台模型已更新', 'ok') }
+      catch (err) { toast(err.message, 'err') }
+    })
+  } catch { $('#my-gateway').textContent = '' }
+}
+$('#gateway-add-model').addEventListener('click', () => editGatewayModel())
+$('#gateway-models').addEventListener('click', async (e) => {
+  const button = e.target.closest('[data-model]')
+  if (!button) return
+  if (button.dataset.action === 'edit') { editGatewayModel(button.dataset.model); return }
+  try { await withButtonLoading(button, '正在同步…', () => api(`/api/admin/gateway/models/${button.dataset.model}/sync`, { method: 'POST' })); renderGateway(); toast('同步成功', 'ok') }
+  catch (err) { toast(err.message, 'err') }
+})
+$('#gateway-users').addEventListener('click', (e) => { const b = e.target.closest('[data-policy]'); if (b) editGatewayPolicy(b.dataset.policy) })
+$('#gateway-defaults').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const fd = new FormData(e.target)
+  try {
+    await withButtonLoading(e.target.querySelector('button[type="submit"]'), '正在保存…', () => api('/api/admin/gateway/settings', { method: 'POST', body: {
+      enabled: fd.get('enabled') === 'on', defaults: { enabled: fd.get('defaultEnabled') === 'on', dailyTokens: Number(fd.get('dailyTokens')), models: fd.getAll('models') },
+    } }))
+    toast('默认配置已保存', 'ok'); renderGateway()
+  } catch (err) { toast(err.message, 'err') }
+})
+$('#gateway-usage-filter').addEventListener('submit', (e) => { e.preventDefault(); renderGatewayUsage() })
 
 // ---- boot ----
 async function boot() {

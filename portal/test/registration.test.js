@@ -92,3 +92,30 @@ test('administrator can recover a password without email and revokes old session
   assert.equal((await fetch(origin + '/api/auth/me', { headers: { cookie: oldCookie } })).status, 401)
   assert.equal((await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })).status, 200)
 })
+
+for (const contentType of ['application/json', 'application/x-www-form-urlencoded']) {
+  test(`logout accepts ${contentType}, redirects home and revokes sessions`, async () => {
+    const login = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+    const { csrfToken } = await login.json()
+    const otherLogin = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+    const otherCookie = otherLogin.headers.get('set-cookie').split(';')[0]
+    const logout = (token, requestOrigin = origin) => fetch(origin + '/api/auth/logout', {
+      method: 'POST', redirect: 'manual',
+      headers: { cookie, origin: requestOrigin, 'content-type': contentType },
+      body: contentType === 'application/json' ? JSON.stringify({ _csrf: token }) : new URLSearchParams({ _csrf: token }),
+    })
+    assert.equal((await fetch(origin + '/api/auth/logout', { headers: { cookie } })).status, 404)
+    assert.equal((await logout('wrong-token')).status, 403)
+    assert.equal((await logout(csrfToken, 'http://other.example')).status, 403)
+    assert.equal((await fetch(origin + '/api/auth/me', { headers: { cookie } })).status, 200)
+    const response = await logout(csrfToken)
+    assert.equal(response.status, 303)
+    assert.equal(response.headers.get('location'), '/')
+    assert.match(response.headers.get('set-cookie'), /Expires=Thu, 01 Jan 1970/i)
+    for (const revokedCookie of [cookie, otherCookie]) {
+      assert.equal((await fetch(origin + '/api/auth/me', { headers: { cookie: revokedCookie } })).status, 401)
+    }
+    assert.equal((await logout(csrfToken)).status, 303)
+  })
+}

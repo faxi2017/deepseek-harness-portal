@@ -41,6 +41,42 @@ function hydrateIcons(root = document) {
   root.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = icon(el.dataset.icon) })
 }
 
+const ERROR_MESSAGES = {
+  'not authenticated': '登录已失效，请重新登录',
+  'admin only': '此操作需要管理员权限',
+  'invalid request host': '访问地址不正确，请从管理平台入口重新进入',
+  'invalid request origin': '请求来源不正确，请刷新页面后重试',
+  'cross-site request rejected': '请求来源校验失败，请刷新页面后重试',
+  'application/json required': '请求格式不正确，请刷新页面后重试',
+  'invalid CSRF token': '登录验证已过期，请刷新页面或重新登录',
+  'too many attempts; try again later': '操作过于频繁，请稍后重试',
+  'registration is disabled': '管理员已关闭新用户注册',
+  'username: 3-32 chars (letters, digits, . _ -)': '账号须为 3–32 位英文字母、数字、点、下划线或连字符',
+  'password: at least 8 characters, at most 72 bytes': '密码至少 8 个字符，最长 72 字节（中文等字符会占用多个字节）',
+  'password must be at least 8 characters': '密码至少 8 个字符，最长 72 字节',
+  'invalid invitation code': '邀请码不正确',
+  'username already taken': '该账号已被使用，请换一个账号',
+  'no instance capacity available; contact admin': '暂时没有可用的实例名额，请联系管理员',
+  'invalid username or password': '账号或密码不正确',
+  'name must be 1-64 characters': '显示名称须为 1–64 个字符',
+  'current password is incorrect': '当前密码不正确',
+  'nothing to update': '没有需要保存的修改',
+  'no instance': '暂未创建实例，请联系管理员',
+  'instance failed; contact admin': '实例启动失败，请联系管理员',
+  'instance deletion is in progress': '实例正在删除，请稍后再试',
+  'registrationEnabled must be boolean': '注册设置无效，请刷新页面后重新设置',
+  'not found': '该用户或实例不存在，请刷新页面',
+  'cannot delete an admin account': '不能删除管理员账号',
+  'deletion failed; retry the operation': '删除失败，请重试',
+  'instance deletion failed; data was retained': '实例删除失败，请联系管理员查看日志',
+  'health check timed out': '实例启动超时，请联系管理员查看日志',
+  'instance health check timed out': '实例启动超时，请稍后重试或联系管理员',
+}
+
+function errorMessage(message) {
+  return ERROR_MESSAGES[message] || '操作失败，请稍后重试；如仍失败，请联系管理员查看日志'
+}
+
 async function api(path, opts = {}) {
   const method = String(opts.method ?? 'GET').toUpperCase()
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method)
@@ -55,9 +91,9 @@ async function api(path, opts = {}) {
     ...rest,
     headers,
     body,
-  })
+  }).catch(() => { throw new Error('无法连接服务，请检查网络和服务是否已启动') })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  if (!res.ok) throw new Error(errorMessage(data.error))
   return data
 }
 
@@ -87,7 +123,7 @@ function openModal({ title, body, footer, wide = false }) {
   root.classList.remove('hidden')
   root.innerHTML = `<div class="modal ${wide ? 'modal-wide' : ''}">
     <div class="modal-head"><span class="modal-title">${escapeHtml(title)}</span>
-      <button class="modal-x" data-close>&times;</button></div>
+      <button class="modal-x" data-close aria-label="关闭">&times;</button></div>
     <div class="modal-body">${body}</div>
     ${footer ? `<div class="modal-foot">${footer}</div>` : ''}
   </div>`
@@ -113,15 +149,15 @@ document.addEventListener('click', (e) => {
   const show = input.type === 'password'
   input.type = show ? 'text' : 'password'
   btn.querySelector('.nav-icon').innerHTML = icon(show ? 'eye-off' : 'eye')
-  btn.title = show ? 'Hide password' : 'Show password'
+  btn.title = show ? '隐藏密码' : '显示密码'
 })
 
-function confirmModal(title, message, actionLabel = 'Delete', danger = true) {
+function confirmModal(title, message, actionLabel = '删除', danger = true) {
   return new Promise((resolve) => {
     openModal({
       title,
       body: `<p>${escapeHtml(message)}</p>`,
-      footer: `<button class="btn" data-no>Cancel</button>
+      footer: `<button class="btn" data-no>取消</button>
                <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-yes>${escapeHtml(actionLabel)}</button>`,
     })
     const root = $('#modal-root')
@@ -131,26 +167,26 @@ function confirmModal(title, message, actionLabel = 'Delete', danger = true) {
 }
 
 // ---- formatting ----
+const STATUS_LABELS = { running: '运行中', stopped: '已停止', provisioning: '创建中', failed: '启动失败', deleting: '删除中' }
 function statusBadge(status) {
-  const label = { running: 'Running', stopped: 'Stopped', provisioning: 'Provisioning', failed: 'Failed' }[status] || status
+  const label = STATUS_LABELS[status] || '未知状态'
   return `<span class="badge badge-${status}"><span class="dot"></span>${label}</span>`
 }
 function relTime(ms) {
   if (!ms) return '—'
   const s = Math.floor((Date.now() - ms) / 1000)
-  if (s < 60) return `${s}s ago`
+  if (s < 60) return `${s} 秒前`
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return `${m} 分钟前`
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
 }
-function fmtDate(ms) { return ms ? new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—' }
+function fmtDate(ms) { return ms ? new Date(ms).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' }) : '—' }
 function fmtNum(n) {
   if (n == null) return '0'
-  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
+  if (n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, '') + '亿'
+  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, '') + '万'
   return String(n)
 }
 function instanceUrl(instance) { return instance.url }
@@ -164,8 +200,8 @@ function setAdminTab(tab) {
   $('#panel-instances').classList.toggle('hidden', tab !== 'instances')
   $('#panel-users').classList.toggle('hidden', tab !== 'users')
   $('#panel-settings').classList.toggle('hidden', tab !== 'settings')
-  const titles = { instances: 'Instances', users: 'Users', settings: 'Settings' }
-  $('#topbar-title').textContent = titles[tab] || 'Overview'
+  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置' }
+  $('#topbar-title').textContent = titles[tab] || '概览'
   if (tab === 'instances') renderInstances()
   else if (tab === 'users') renderUsers()
   else if (tab === 'settings') renderSettings()
@@ -199,7 +235,7 @@ $('#login-form').addEventListener('submit', async (e) => {
   $('#auth-msg').textContent = ''
   const btn = e.target.querySelector('button[type="submit"]')
   try {
-    await withButtonLoading(btn, 'Logging in…', () =>
+    await withButtonLoading(btn, '正在登录…', () =>
       api('/api/auth/login', { method: 'POST', body: { username: fd.get('username'), password: fd.get('password') } }))
     await boot()
   } catch (err) { $('#auth-msg').textContent = err.message }
@@ -210,8 +246,8 @@ $('#register-form').addEventListener('submit', async (e) => {
   const fd = new FormData(e.target)
   $('#auth-msg').textContent = ''
   try {
-    if (fd.get('password') !== fd.get('confirmPassword')) throw new Error('Passwords do not match')
-    await withButtonLoading($('#register-submit'), 'Creating account…', () =>
+    if (fd.get('password') !== fd.get('confirmPassword')) throw new Error('两次输入的密码不一致')
+    await withButtonLoading($('#register-submit'), '正在注册…', () =>
       api('/api/auth/register', { method: 'POST', body: {
         username: fd.get('username'), password: fd.get('password'), inviteCode: fd.get('inviteCode'),
       } }))
@@ -219,20 +255,30 @@ $('#register-form').addEventListener('submit', async (e) => {
   } catch (err) { $('#auth-msg').textContent = err.message }
 })
 
+$$('.logout-form').forEach((form) => form.addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const btn = form.querySelector('button[type="submit"]')
+  try {
+    await withButtonLoading(btn, '正在退出…', () =>
+      api('/api/auth/logout', { method: 'POST', body: { _csrf: csrfToken } }))
+    window.location.replace('/')
+  } catch (err) { toast(err.message, 'err') }
+}))
+
 // ---- profile (modal) ----
 async function openProfile() {
   try {
     const p = await api('/api/profile')
     openModal({
-      title: 'Profile',
+      title: '个人设置',
       body: `<form id="profile-form" class="form">
-        <div class="field"><label>Name</label><input name="name" value="${escapeHtml(p.name ?? '')}" /></div>
-        <div class="field"><label>Username (used to log in)</label><input name="username" value="${escapeHtml(p.username ?? '')}" autocomplete="username" /></div>
-        <div class="field"><label>New password (leave blank to keep)</label><div class="pw-row"><input name="newPassword" type="password" autocomplete="new-password" /><button type="button" class="pw-toggle" title="Show password"><span class="nav-icon" data-icon="eye"></span></button></div></div>
-        <div class="field"><label>Current password (required to change password)</label><div class="pw-row"><input name="currentPassword" type="password" autocomplete="current-password" /><button type="button" class="pw-toggle" title="Show password"><span class="nav-icon" data-icon="eye"></span></button></div></div>
+        <div class="field"><label>显示名称</label><input name="name" value="${escapeHtml(p.name ?? '')}" /></div>
+        <div class="field"><label>账号（用于登录）</label><input name="username" value="${escapeHtml(p.username ?? '')}" autocomplete="username" /></div>
+        <div class="field"><label>新密码（留空则不修改）</label><div class="pw-row"><input name="newPassword" type="password" autocomplete="new-password" /><button type="button" class="pw-toggle" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button></div></div>
+        <div class="field"><label>当前密码（修改密码时必填）</label><div class="pw-row"><input name="currentPassword" type="password" autocomplete="current-password" /><button type="button" class="pw-toggle" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button></div></div>
         <p id="profile-msg" class="form-msg"></p>
       </form>`,
-      footer: `<button class="btn" id="profile-save">Save</button>`,
+      footer: `<button class="btn" id="profile-save">保存</button>`,
     })
     $('#profile-save').addEventListener('click', async () => {
       const fd = new FormData($('#profile-form'))
@@ -249,7 +295,7 @@ async function openProfile() {
           csrfToken = updated.csrfToken
           $$('.csrf-token').forEach((input) => { input.value = csrfToken })
         }
-        msg.textContent = 'Saved'
+        msg.textContent = '保存成功'
         msg.className = 'form-msg ok'
         setTimeout(() => { closeModal(); boot() }, 600)
       } catch (err) { msg.textContent = err.message; msg.className = 'form-msg err' }
@@ -264,7 +310,7 @@ async function renderUser() {
     const body = $('#instance-body'), empty = $('#instance-empty')
     if (!instance) {
       body.classList.add('hidden'); empty.classList.remove('hidden')
-      empty.textContent = 'No instance provisioned yet. Contact your admin.'
+      empty.textContent = '暂未创建实例，请联系管理员。'
       return
     }
     empty.classList.add('hidden'); body.classList.remove('hidden')
@@ -276,7 +322,7 @@ async function renderUser() {
     $('#i-launch').href = url
     $('#i-requests').textContent = fmtNum(instance.request_count ?? 0)
     $('#i-active').textContent = relTime(instance.last_active)
-    $('#i-error').textContent = instance.error || ''
+    $('#i-error').textContent = instance.error ? errorMessage(instance.error) : ''
     $('#i-error').style.display = instance.error ? '' : 'none'
   } catch (err) {
     $('#instance-empty').textContent = err.message
@@ -284,8 +330,8 @@ async function renderUser() {
 }
 
 $('#i-copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('#i-url').textContent); toast('URL copied', 'ok') }
-  catch { toast('Copy failed', 'err') }
+  try { await navigator.clipboard.writeText($('#i-url').textContent); toast('地址已复制', 'ok') }
+  catch { toast('复制失败，请手动复制', 'err') }
 })
 
 // ---- admin ----
@@ -293,10 +339,10 @@ async function renderStats() {
   try {
     const { stats } = await api('/api/admin/stats')
     const cards = [
-      ['Users', stats.users, 'users'],
-      ['Instances', stats.instances, 'server'],
-      ['Running', stats.running, 'play'],
-      ['Total requests', fmtNum(stats.totalRequests), 'refresh'],
+      ['用户总数', stats.users, 'users'],
+      ['实例总数', stats.instances, 'server'],
+      ['运行中', stats.running, 'play'],
+      ['累计请求', fmtNum(stats.totalRequests), 'refresh'],
     ]
     $('#admin-stats').innerHTML = cards.map(([label, value, ic]) => `<div class="stat-card">
       <div class="stat-label"><span class="nav-icon" data-icon="${ic}"></span> ${label}</div>
@@ -317,7 +363,7 @@ async function renderInstances() {
 function drawInstances() {
   const q = ($('#search-instances').value || '').toLowerCase()
   const rows = instancesCache
-    .filter((i) => !q || [i.slug, i.username, i.user_name, i.status].some((v) => String(v ?? '').toLowerCase().includes(q)))
+    .filter((i) => !q || [i.slug, i.username, i.user_name, i.status, STATUS_LABELS[i.status]].some((v) => String(v ?? '').toLowerCase().includes(q)))
     .map((i) => {
       const url = instanceUrl(i)
       const id = i.username || i.user_name || '—'
@@ -329,16 +375,16 @@ function drawInstances() {
         <td>${fmtNum(i.request_count ?? 0)}</td>
         <td>${relTime(i.last_active)}</td>
         <td><div class="cell-actions">
-          <a class="btn btn-ghost btn-sm" href="${url}" target="_blank" rel="noopener">${icon('external', 14)} Open</a>
-          <button class="btn btn-ghost btn-sm" data-act="logs" data-id="${i.id}">${icon('terminal', 14)} Logs</button>
-          <button class="btn btn-ghost btn-sm" data-act="reprovision" data-id="${i.id}">${icon('refresh', 14)} Reprovision</button>
-          <button class="btn btn-danger btn-sm" data-act="delete" data-id="${i.id}">${icon('trash', 14)} Delete</button>
+          <a class="btn btn-ghost btn-sm" href="${url}" target="_blank" rel="noopener">${icon('external', 14)} 进入</a>
+          <button class="btn btn-ghost btn-sm" data-act="logs" data-id="${i.id}">${icon('terminal', 14)} 日志</button>
+          <button class="btn btn-ghost btn-sm" data-act="reprovision" data-id="${i.id}">${icon('refresh', 14)} 重建</button>
+          <button class="btn btn-danger btn-sm" data-act="delete" data-id="${i.id}">${icon('trash', 14)} 删除</button>
         </div></td>
       </tr>`
     }).join('')
   $('#instances-table').innerHTML = rows
-    ? `<div class="table-wrap"><table><thead><tr><th>Instance</th><th>User</th><th>Status</th><th>Port</th><th>Req</th><th>Last active</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`
-    : `<p class="empty">No instances found.</p>`
+    ? `<div class="table-wrap"><table><thead><tr><th>实例</th><th>所属用户</th><th>状态</th><th>内部端口</th><th>请求次数</th><th>最近活跃</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<p class="empty">暂无符合条件的实例。</p>`
 }
 
 async function renderUsers() {
@@ -352,17 +398,17 @@ async function renderUsers() {
 function drawUsers() {
   const q = ($('#search-users').value || '').toLowerCase()
   const rows = usersCache
-    .filter((u) => !q || [u.username, u.name, u.role].some((v) => String(v ?? '').toLowerCase().includes(q)))
+    .filter((u) => !q || [u.username, u.name, u.role, u.role === 'admin' ? '管理员' : '普通用户'].some((v) => String(v ?? '').toLowerCase().includes(q)))
     .map((u) => `<tr>
       <td>${escapeHtml(u.username || '—')}</td>
       <td>${escapeHtml(u.name || '')}</td>
-      <td><span class="badge ${u.role === 'admin' ? 'badge-running' : 'badge-stopped'}">${u.role}</span></td>
+      <td><span class="badge ${u.role === 'admin' ? 'badge-running' : 'badge-stopped'}">${u.role === 'admin' ? '管理员' : '普通用户'}</span></td>
       <td>${fmtDate(u.created_at)}</td>
-      <td>${u.role !== 'admin' ? `<button class="btn btn-ghost btn-sm" data-uid="${u.id}" data-act="reset-password">${icon('key', 14)} Reset password</button> <button class="btn btn-danger btn-sm" data-uid="${u.id}" data-act="deluser">${icon('trash', 14)} Delete</button>` : ''}</td>
+      <td>${u.role !== 'admin' ? `<button class="btn btn-ghost btn-sm" data-uid="${u.id}" data-act="reset-password">${icon('key', 14)} 重置密码</button> <button class="btn btn-danger btn-sm" data-uid="${u.id}" data-act="deluser">${icon('trash', 14)} 删除</button>` : ''}</td>
     </tr>`).join('')
   $('#users-table').innerHTML = rows
-    ? `<div class="table-wrap"><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
-    : `<p class="empty">No users found.</p>`
+    ? `<div class="table-wrap"><table><thead><tr><th>账号</th><th>显示名称</th><th>角色</th><th>注册日期</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<p class="empty">暂无符合条件的用户。</p>`
 }
 
 async function renderSettings() {
@@ -379,9 +425,9 @@ $('#gen-invite').addEventListener('click', () => {
 })
 $('#copy-invite').addEventListener('click', async () => {
   const v = $('#set-invite').value
-  if (!v) { toast('Invitation code is empty', 'err'); return }
-  try { await navigator.clipboard.writeText(v); toast('Invitation code copied', 'ok') }
-  catch { toast('Copy failed', 'err') }
+  if (!v) { toast('请先填写或生成邀请码', 'err'); return }
+  try { await navigator.clipboard.writeText(v); toast('邀请码已复制', 'ok') }
+  catch { toast('复制失败，请手动复制', 'err') }
 })
 
 $('#settings-form').addEventListener('submit', async (e) => {
@@ -391,11 +437,11 @@ $('#settings-form').addEventListener('submit', async (e) => {
   msg.textContent = ''
   const btn = e.target.querySelector('button[type="submit"]')
   try {
-    await withButtonLoading(btn, 'Saving…', () => api('/api/admin/settings', { method: 'POST', body: {
+    await withButtonLoading(btn, '正在保存…', () => api('/api/admin/settings', { method: 'POST', body: {
       inviteCode: fd.get('inviteCode'),
       registrationEnabled: fd.get('registrationEnabled') === 'on',
     }}))
-    msg.textContent = 'Saved'
+    msg.textContent = '保存成功'
     msg.className = 'form-msg ok'
     await boot()
     setTimeout(() => { msg.textContent = '' }, 2000)
@@ -409,21 +455,21 @@ $('#instances-table').addEventListener('click', async (e) => {
   const { act, id } = btn.dataset
   try {
     if (act === 'logs') {
-      openModal({ title: 'Container logs', body: '<p><span class="spinner"></span> Loading…</p>', wide: true })
+      openModal({ title: '实例日志', body: '<p><span class="spinner"></span> 正在加载…</p>', wide: true })
       const { logs } = await api(`/api/admin/instances/${id}/logs`)
-      $('#modal-root .modal-body').innerHTML = `<pre class="log-view">${escapeHtml(logs || '(empty)')}</pre>`
+      $('#modal-root .modal-body').innerHTML = `<pre class="log-view">${escapeHtml(logs || '（暂无日志）')}</pre>`
       return
     }
     if (act === 'delete') {
-      const ok = await confirmModal('Delete instance', 'Delete this instance and its volumes? This cannot be undone.')
+      const ok = await confirmModal('删除实例', '确定删除此实例及其全部数据吗？此操作无法撤销。')
       if (!ok) return
     }
     if (act === 'reprovision') {
-      const ok = await confirmModal('Reprovision instance', 'Rebuild the container from the image? User data (volumes) is kept.', 'Reprovision', false)
+      const ok = await confirmModal('重建实例', '确定使用当前配置的版本重建实例吗？用户文件、插件及配置将保留。', '确认重建', false)
       if (!ok) return
     }
     await api(`/api/admin/instances/${id}/${act}`, { method: 'POST' })
-    toast(act === 'delete' ? 'Instance deleted' : 'Instance reprovisioning', 'ok')
+    toast(act === 'delete' ? '实例已删除' : '实例正在重建', 'ok')
     renderStats(); renderInstances()
   } catch (err) { toast(err.message, 'err') }
 })
@@ -433,26 +479,26 @@ $('#users-table').addEventListener('click', async (e) => {
   if (!btn) return
   if (btn.dataset.act === 'reset-password') {
     const user = usersCache.find((u) => String(u.id) === btn.dataset.uid)
-    openModal({ title: `Reset password: ${user?.username ?? ''}`,
-      body: '<div class="field"><label for="reset-password">New password (at least 8 characters)</label><input id="reset-password" type="password" autocomplete="new-password" /></div><p id="reset-msg" class="form-msg"></p>',
-      footer: '<button class="btn btn-primary" id="reset-save">Reset password</button>',
+    openModal({ title: `重置密码：${user?.username ?? ''}`,
+      body: '<div class="field"><label for="reset-password">新密码（至少 8 个字符）</label><input id="reset-password" type="password" autocomplete="new-password" /></div><p id="reset-msg" class="form-msg"></p>',
+      footer: '<button class="btn btn-primary" id="reset-save">重置密码</button>',
     })
     $('#reset-save').addEventListener('click', async () => {
       try {
-        await withButtonLoading($('#reset-save'), 'Saving…', () => api(`/api/admin/users/${btn.dataset.uid}/reset-password`, {
+        await withButtonLoading($('#reset-save'), '正在保存…', () => api(`/api/admin/users/${btn.dataset.uid}/reset-password`, {
           method: 'POST', body: { password: $('#reset-password').value },
         }))
         closeModal()
-        toast('Password reset; existing sessions signed out', 'ok')
+        toast('密码已重置，该用户的原有登录已失效', 'ok')
       } catch (err) { $('#reset-msg').textContent = err.message }
     })
     return
   }
-  const ok = await confirmModal('Delete user', 'Delete this user, their instance, and all its data? This cannot be undone.')
+  const ok = await confirmModal('删除用户', '确定删除此用户及其工作空间中的全部数据吗？此操作无法撤销。')
   if (!ok) return
   try {
     await api(`/api/admin/users/${btn.dataset.uid}/delete`, { method: 'POST' })
-    toast('User deleted', 'ok')
+    toast('用户已删除', 'ok')
     renderStats(); renderUsers()
   } catch (err) { toast(err.message, 'err') }
 })
@@ -488,7 +534,7 @@ async function boot() {
       setAdminTab('instances')
       renderStats()
     } else {
-      $('#topbar-title').textContent = 'Your instance'
+      $('#topbar-title').textContent = '我的工作空间'
       await renderUser()
     }
   } catch {

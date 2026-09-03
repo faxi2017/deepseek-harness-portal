@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DeepSeek Harness Portal</title>
+  <title>DeepSeek Harness 管理平台</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -20,53 +20,53 @@
         <span class="brand-mark">◈</span>
         <div>
           <div class="brand-name">DeepSeek Harness</div>
-          <div class="brand-sub">Portal</div>
+          <div class="brand-sub">管理平台</div>
         </div>
       </div>
 
       <div class="segmented" role="tablist">
-        <button id="tab-login" class="seg" role="tab">Log in</button>
-        <button id="tab-register" class="seg" role="tab">Register</button>
+        <button id="tab-login" class="seg" role="tab">登录</button>
+        <button id="tab-register" class="seg" role="tab">注册</button>
       </div>
 
       <!-- password login -->
       <form id="login-form" class="form" novalidate>
         <div class="field">
-          <label for="login-username">Username</label>
+          <label for="login-username">账号</label>
           <input id="login-username" name="username" autocomplete="username" required />
         </div>
         <div class="field">
-          <label for="login-password">Password</label>
+          <label for="login-password">密码</label>
           <div class="pw-row">
             <input id="login-password" name="password" type="password" autocomplete="current-password" required />
-            <button type="button" class="pw-toggle" data-pw="login-password" title="Show password"><span class="nav-icon" data-icon="eye"></span></button>
+            <button type="button" class="pw-toggle" data-pw="login-password" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button>
           </div>
         </div>
-        <button class="btn btn-primary btn-block" type="submit">Log in</button>
+        <button class="btn btn-primary btn-block" type="submit">登录</button>
       </form>
 
       <!-- registration -->
       <form id="register-form" class="form hidden" novalidate>
         <div class="field">
-          <label for="reg-username">Username <span class="opt">(3–32 letters, digits, . _ -)</span></label>
+          <label for="reg-username">账号 <span class="opt">（3–32 位英文字母、数字或 . _ -）</span></label>
           <input id="reg-username" name="username" autocomplete="username" required minlength="3" maxlength="32" />
         </div>
         <div class="field">
-          <label for="reg-password">Password <span class="opt">(at least 8 characters)</span></label>
+          <label for="reg-password">密码 <span class="opt">（至少 8 个字符）</span></label>
           <div class="pw-row">
             <input id="reg-password" name="password" type="password" autocomplete="new-password" required minlength="8" />
-            <button type="button" class="pw-toggle" data-pw="reg-password" title="Show password"><span class="nav-icon" data-icon="eye"></span></button>
+            <button type="button" class="pw-toggle" data-pw="reg-password" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button>
           </div>
         </div>
         <div class="field">
-          <label for="reg-confirm">Confirm password</label>
+          <label for="reg-confirm">确认密码</label>
           <input id="reg-confirm" name="confirmPassword" type="password" autocomplete="new-password" required />
         </div>
         <div class="field hidden" id="register-invite-row">
-          <label for="reg-invite">Invitation code</label>
+          <label for="reg-invite">邀请码</label>
           <input id="reg-invite" name="inviteCode" autocomplete="off" />
         </div>
-        <button class="btn btn-primary btn-block" type="submit" id="register-submit">Create account</button>
+        <button class="btn btn-primary btn-block" type="submit" id="register-submit">注册账号</button>
       </form>
 
       <p id="auth-msg" class="form-msg" role="alert"></p>
@@ -78,27 +78,27 @@
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-brand">
         <span class="brand-mark">◈</span>
-        <span class="brand-name">Portal</span>
+        <span class="brand-name">管理平台</span>
       </div>
       <nav class="nav" id="admin-nav">
         <button class="nav-item" data-tab="instances">
-          <span class="nav-icon" data-icon="server"></span> Instances
+          <span class="nav-icon" data-icon="server"></span> 实例管理
         </button>
         <button class="nav-item" data-tab="users">
-          <span class="nav-icon" data-icon="users"></span> Users
+          <span class="nav-icon" data-icon="users"></span> 用户管理
         </button>
         <button class="nav-item" data-tab="settings">
-          <span class="nav-icon" data-icon="sliders"></span> Settings
+          <span class="nav-icon" data-icon="sliders"></span> 平台设置
         </button>
       </nav>
       <div class="sidebar-foot">
         <button class="nav-item" id="profile-btn">
-          <span class="nav-icon" data-icon="user"></span> Profile
+          <span class="nav-icon" data-icon="user"></span> 个人设置
         </button>
         <form class="logout-form" method="post" action="/api/auth/logout">
           <input class="csrf-token" type="hidden" name="_csrf" />
           <button class="nav-item" type="submit">
-            <span class="nav-icon" data-icon="logout"></span> Log out
+            <span class="nav-icon" data-icon="logout"></span> 退出登录
           </button>
         </form>
       </div>
@@ -106,9 +106,9 @@
 
     <div class="main">
       <header class="topbar">
-        <h1 id="topbar-title">Overview</h1>
+        <h1 id="topbar-title">概览</h1>
         <div class="topbar-right">
-          <button class="btn btn-ghost" id="refresh-btn" title="Refresh">
+          <button class="btn btn-ghost" id="refresh-btn" title="刷新">
             <span class="nav-icon" data-icon="refresh"></span>
           </button>
           <span id="whoami" class="whoami"></span>
@@ -118,22 +118,22 @@
       <nav id="mobile-nav" class="mobile-nav">
         <div class="mobile-admin-nav" id="mobile-admin-nav">
           <button class="nav-item" data-tab="instances">
-            <span class="nav-icon" data-icon="server"></span> Instances
+            <span class="nav-icon" data-icon="server"></span> 实例管理
           </button>
           <button class="nav-item" data-tab="users">
-            <span class="nav-icon" data-icon="users"></span> Users
+            <span class="nav-icon" data-icon="users"></span> 用户管理
           </button>
           <button class="nav-item" data-tab="settings">
-            <span class="nav-icon" data-icon="sliders"></span> Settings
+            <span class="nav-icon" data-icon="sliders"></span> 平台设置
           </button>
         </div>
         <button class="nav-item" id="mobile-profile-btn">
-          <span class="nav-icon" data-icon="user"></span> Profile
+          <span class="nav-icon" data-icon="user"></span> 个人设置
         </button>
         <form class="logout-form" method="post" action="/api/auth/logout">
           <input class="csrf-token" type="hidden" name="_csrf" />
           <button class="nav-item" type="submit">
-            <span class="nav-icon" data-icon="logout"></span> Log out
+            <span class="nav-icon" data-icon="logout"></span> 退出登录
           </button>
         </form>
       </nav>
@@ -142,29 +142,29 @@
         <!-- user view -->
         <section id="user-view" class="hidden">
           <div id="instance-card" class="panel">
-            <p id="instance-empty" class="empty">No instance provisioned yet.</p>
+            <p id="instance-empty" class="empty">暂未创建实例。</p>
             <div id="instance-body" class="hidden">
               <div class="instance-head">
                 <div>
                   <div class="instance-name" id="i-slug">—</div>
                   <div class="instance-url-row">
                     <a id="i-url" class="instance-url" target="_blank" rel="noopener"></a>
-                    <button class="btn btn-ghost btn-sm" id="i-copy" title="Copy URL"><span class="nav-icon" data-icon="copy"></span></button>
+                    <button class="btn btn-ghost btn-sm" id="i-copy" title="复制地址"><span class="nav-icon" data-icon="copy"></span></button>
                   </div>
                 </div>
                 <div id="i-status" class="instance-status"></div>
               </div>
               <div class="kv-grid">
-                <div class="kv"><span class="k">Requests</span><span class="v" id="i-requests">0</span></div>
-                <div class="kv"><span class="k">Last active</span><span class="v" id="i-active">—</span></div>
+                <div class="kv"><span class="k">请求次数</span><span class="v" id="i-requests">0</span></div>
+                <div class="kv"><span class="k">最近活跃</span><span class="v" id="i-active">—</span></div>
               </div>
               <p id="i-error" class="form-msg err"></p>
               <div class="actions">
                 <a id="i-launch" class="btn btn-primary" target="_blank" rel="noopener">
-                  <span class="nav-icon" data-icon="play"></span> Launch
+                  <span class="nav-icon" data-icon="play"></span> 进入工作空间
                 </a>
               </div>
-              <p class="hint">Your DeepSeek API key is set inside your instance (Settings → Models) and lives in that instance only. Idle instances pause automatically and wake on launch.</p>
+              <p class="hint">请在自己的 DSH 工作空间中，通过“设置 → 模型”配置 DeepSeek API 密钥。密钥仅保存在你的实例中。实例空闲时会自动停止，再次进入时自动启动。</p>
             </div>
           </div>
         </section>
@@ -175,9 +175,9 @@
 
           <div class="panel" id="panel-instances">
             <div class="panel-head">
-              <h2>Instances</h2>
+              <h2>实例管理</h2>
               <div class="panel-tools">
-                <input id="search-instances" class="input input-search" type="search" placeholder="Search…" />
+                <input id="search-instances" class="input input-search" type="search" placeholder="搜索…" />
               </div>
             </div>
             <div id="instances-table"></div>
@@ -185,27 +185,27 @@
 
           <div class="panel hidden" id="panel-users">
             <div class="panel-head">
-              <h2>Users</h2>
+              <h2>用户管理</h2>
               <div class="panel-tools">
-                <input id="search-users" class="input input-search" type="search" placeholder="Search…" />
+                <input id="search-users" class="input input-search" type="search" placeholder="搜索…" />
               </div>
             </div>
             <div id="users-table"></div>
           </div>
 
           <div class="panel hidden" id="panel-settings">
-            <h2>Settings</h2>
+            <h2>平台设置</h2>
             <form id="settings-form" class="form form-narrow">
               <div class="field">
-                <label for="set-invite">Invitation code <span class="opt">(optional; empty = open registration)</span></label>
+                <label for="set-invite">邀请码 <span class="opt">（选填；留空则注册时无需邀请码）</span></label>
                 <div class="input-row">
-                  <input id="set-invite" name="inviteCode" autocomplete="off" placeholder="leave blank to disable" />
-                  <button type="button" class="btn btn-ghost" id="gen-invite" title="Generate">Generate</button>
-                  <button type="button" class="btn btn-ghost" id="copy-invite" title="Copy"><span class="nav-icon" data-icon="copy"></span></button>
+                  <input id="set-invite" name="inviteCode" autocomplete="off" placeholder="留空则不需要邀请码" />
+                  <button type="button" class="btn btn-ghost" id="gen-invite" title="生成邀请码">生成</button>
+                  <button type="button" class="btn btn-ghost" id="copy-invite" title="复制"><span class="nav-icon" data-icon="copy"></span></button>
                 </div>
               </div>
-              <label class="check"><input type="checkbox" name="registrationEnabled" /> Allow new registrations</label>
-              <button class="btn btn-primary" type="submit">Save settings</button>
+              <label class="check"><input type="checkbox" name="registrationEnabled" /> 允许新用户注册</label>
+              <button class="btn btn-primary" type="submit">保存设置</button>
             </form>
             <p id="settings-msg" class="form-msg"></p>
           </div>

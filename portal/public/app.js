@@ -5,11 +5,9 @@ const $$ = (sel) => [...document.querySelectorAll(sel)]
 let me = null
 let csrfToken = ''
 let authMode = 'login' // 'login' | 'register'
-let otpStep = 'send'   // 'send' | 'verify'
-let pendingEmail = ''
 let instancesCache = []
 let usersCache = []
-let cfg = { domain: '', instanceDomain: '', otpRegistrationEnabled: true, passwordLoginEnabled: true, inviteCodeRequired: false }
+let cfg = { domain: '', instanceDomain: '', registrationEnabled: true, inviteCodeRequired: false }
 
 // ---- inline icons (feather-style) ----
 const ICONS = {
@@ -155,7 +153,7 @@ function fmtNum(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
   return String(n)
 }
-function instanceUrl(slug) { return `https://${slug}.${cfg.instanceDomain}` }
+function instanceUrl(instance) { return instance.url }
 
 // ---- views ----
 function showApp() { $('#auth-view').classList.add('hidden'); $('#app-view').classList.remove('hidden') }
@@ -175,19 +173,12 @@ function setAdminTab(tab) {
 
 // ---- auth ----
 function resetAuth() {
-  otpStep = 'send'
-  pendingEmail = ''
   $('#auth-msg').textContent = ''
   $('#login-form').reset()
-  $('#login-otp-form').reset()
   $('#register-form').reset()
-  $('#login-otp-code-row').classList.add('hidden')
-  $('#register-otp-row').classList.add('hidden')
   $('#register-invite-row').classList.toggle('hidden', !cfg.inviteCodeRequired)
-  $('#login-otp-submit').textContent = 'Send code'
-  $('#register-submit').textContent = 'Send code'
-  $('#login-otp-form').classList.add('hidden')
-  $('#login-form').classList.remove('hidden')
+  $('#tab-register').classList.toggle('hidden', !cfg.registrationEnabled)
+  if (!cfg.registrationEnabled) authMode = 'login'
   renderAuthTabs()
 }
 
@@ -197,7 +188,6 @@ function renderAuthTabs() {
   $('#tab-register').classList.toggle('active', !login)
   $('#login-form').classList.toggle('hidden', !login)
   $('#register-form').classList.toggle('hidden', login)
-  $('#login-otp-form').classList.add('hidden')
 }
 
 $('#tab-login').addEventListener('click', () => { authMode = 'login'; resetAuth() })
@@ -215,68 +205,18 @@ $('#login-form').addEventListener('submit', async (e) => {
   } catch (err) { $('#auth-msg').textContent = err.message }
 })
 
-$('#login-via-otp').addEventListener('click', () => {
-  $('#login-form').classList.add('hidden')
-  $('#login-otp-form').classList.remove('hidden')
-})
-$('#login-otp-back').addEventListener('click', () => {
-  otpStep = 'send'
-  $('#login-otp-form').classList.add('hidden')
-  $('#login-form').classList.remove('hidden')
-})
-
-$('#login-otp-form').addEventListener('submit', async (e) => {
-  e.preventDefault()
-  const fd = new FormData(e.target)
-  const email = fd.get('email')
-  $('#auth-msg').textContent = ''
-  const btn = $('#login-otp-submit')
-  try {
-    if (otpStep === 'send' || email !== pendingEmail) {
-      await withButtonLoading(btn, 'Sending…', () =>
-        api('/api/auth/login/request', { method: 'POST', body: { email } }))
-      pendingEmail = email
-      otpStep = 'verify'
-      $('#login-otp-code-row').classList.remove('hidden')
-      $('#login-otp-submit').textContent = 'Verify code'
-      $('#auth-msg').textContent = 'Code sent — check your email.'
-      return
-    }
-    await withButtonLoading(btn, 'Verifying…', () =>
-      api('/api/auth/login/verify', { method: 'POST', body: { email, otp: fd.get('otp') } }))
-    await boot()
-  } catch (err) {
-    $('#auth-msg').textContent = err.message
-  }
-})
-
 $('#register-form').addEventListener('submit', async (e) => {
   e.preventDefault()
   const fd = new FormData(e.target)
-  const email = fd.get('email')
-  const name = fd.get('name')
-  const username = fd.get('username')
-  const password = fd.get('password')
-  const inviteCode = fd.get('inviteCode')
   $('#auth-msg').textContent = ''
-  const btn = $('#register-submit')
   try {
-    if (otpStep === 'send' || email !== pendingEmail) {
-      await withButtonLoading(btn, 'Sending…', () =>
-        api('/api/auth/register/request', { method: 'POST', body: { email, inviteCode } }))
-      pendingEmail = email
-      otpStep = 'verify'
-      $('#register-otp-row').classList.remove('hidden')
-      $('#register-submit').textContent = 'Verify & create account'
-      $('#auth-msg').textContent = 'Code sent — check your email.'
-      return
-    }
-    await withButtonLoading(btn, 'Creating account…', () =>
-      api('/api/auth/register/verify', { method: 'POST', body: { email, otp: fd.get('otp'), name, username, password, inviteCode } }))
+    if (fd.get('password') !== fd.get('confirmPassword')) throw new Error('Passwords do not match')
+    await withButtonLoading($('#register-submit'), 'Creating account…', () =>
+      api('/api/auth/register', { method: 'POST', body: {
+        username: fd.get('username'), password: fd.get('password'), inviteCode: fd.get('inviteCode'),
+      } }))
     await boot()
-  } catch (err) {
-    $('#auth-msg').textContent = err.message
-  }
+  } catch (err) { $('#auth-msg').textContent = err.message }
 })
 
 // ---- profile (modal) ----
@@ -288,14 +228,12 @@ async function openProfile() {
       body: `<form id="profile-form" class="form">
         <div class="field"><label>Name</label><input name="name" value="${escapeHtml(p.name ?? '')}" /></div>
         <div class="field"><label>Username (used to log in)</label><input name="username" value="${escapeHtml(p.username ?? '')}" autocomplete="username" /></div>
-        <div class="field"><label>Email</label><input type="email" value="${escapeHtml(p.email ?? '')}" readonly /></div>
         <div class="field"><label>New password (leave blank to keep)</label><div class="pw-row"><input name="newPassword" type="password" autocomplete="new-password" /><button type="button" class="pw-toggle" title="Show password"><span class="nav-icon" data-icon="eye"></span></button></div></div>
         <div class="field"><label>Current password (required to change password)</label><div class="pw-row"><input name="currentPassword" type="password" autocomplete="current-password" /><button type="button" class="pw-toggle" title="Show password"><span class="nav-icon" data-icon="eye"></span></button></div></div>
         <p id="profile-msg" class="form-msg"></p>
       </form>`,
-      footer: `<button class="btn btn-ghost" id="profile-email-change">Change email</button><button class="btn" id="profile-save">Save</button>`,
+      footer: `<button class="btn" id="profile-save">Save</button>`,
     })
-    $('#profile-email-change').addEventListener('click', () => openEmailChange(p.email ?? ''))
     $('#profile-save').addEventListener('click', async () => {
       const fd = new FormData($('#profile-form'))
       const msg = $('#profile-msg')
@@ -319,55 +257,6 @@ async function openProfile() {
   } catch (err) { toast(err.message, 'err') }
 }
 
-function openEmailChange(currentEmail) {
-  openModal({
-    title: 'Verify email change',
-    body: `<form id="email-change-form" class="form">
-      <p class="muted">For your security, one code will be sent to <strong>${escapeHtml(currentEmail)}</strong> and another to the new address.</p>
-      <div class="field"><label>New email</label><input name="newEmail" type="email" autocomplete="email" required /></div>
-      <div id="email-change-proofs" class="hidden">
-        <div class="field"><label>Code sent to current email</label><input name="currentOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" /></div>
-        <div class="field"><label>Code sent to new email</label><input name="newOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" /></div>
-      </div>
-      <p id="email-change-msg" class="form-msg"></p>
-    </form>`,
-    footer: `<button class="btn btn-ghost" id="email-change-cancel">Cancel</button><button class="btn" id="email-change-request">Send codes</button><button class="btn hidden" id="email-change-verify">Verify & change</button>`,
-  })
-  $('#email-change-cancel').addEventListener('click', openProfile)
-  $('#email-change-request').addEventListener('click', async () => {
-    const form = $('#email-change-form')
-    const input = form.elements.newEmail
-    const msg = $('#email-change-msg')
-    msg.textContent = ''
-    try {
-      await withButtonLoading($('#email-change-request'), 'Sending…', () =>
-        api('/api/profile/email-change/request', { method: 'POST', body: { newEmail: input.value } }))
-      input.readOnly = true
-      $('#email-change-proofs').classList.remove('hidden')
-      $('#email-change-request').classList.add('hidden')
-      $('#email-change-verify').classList.remove('hidden')
-      msg.textContent = 'Check both inboxes for a verification code.'
-      msg.className = 'form-msg ok'
-    } catch (err) { msg.textContent = err.message; msg.className = 'form-msg err' }
-  })
-  $('#email-change-verify').addEventListener('click', async () => {
-    const fd = new FormData($('#email-change-form'))
-    const msg = $('#email-change-msg')
-    msg.textContent = ''
-    try {
-      const updated = await withButtonLoading($('#email-change-verify'), 'Verifying…', () =>
-        api('/api/profile/email-change/verify', { method: 'POST', body: {
-          newEmail: fd.get('newEmail'), currentOtp: fd.get('currentOtp'), newOtp: fd.get('newOtp'),
-        }}))
-      csrfToken = updated.csrfToken
-      $$('.csrf-token').forEach((input) => { input.value = csrfToken })
-      msg.textContent = 'Email changed. Other sessions were signed out.'
-      msg.className = 'form-msg ok'
-      setTimeout(() => { closeModal(); boot() }, 700)
-    } catch (err) { msg.textContent = err.message; msg.className = 'form-msg err' }
-  })
-}
-
 // ---- user view ----
 async function renderUser() {
   try {
@@ -381,7 +270,7 @@ async function renderUser() {
     empty.classList.add('hidden'); body.classList.remove('hidden')
     $('#i-slug').textContent = instance.slug
     $('#i-status').innerHTML = statusBadge(instance.status)
-    const url = instanceUrl(instance.slug)
+    const url = instanceUrl(instance)
     $('#i-url').textContent = url
     $('#i-url').href = url
     $('#i-launch').href = url
@@ -428,10 +317,10 @@ async function renderInstances() {
 function drawInstances() {
   const q = ($('#search-instances').value || '').toLowerCase()
   const rows = instancesCache
-    .filter((i) => !q || [i.slug, i.username, i.email, i.user_name, i.status].some((v) => String(v ?? '').toLowerCase().includes(q)))
+    .filter((i) => !q || [i.slug, i.username, i.user_name, i.status].some((v) => String(v ?? '').toLowerCase().includes(q)))
     .map((i) => {
-      const url = instanceUrl(i.slug)
-      const id = i.username || i.email || i.user_name || '—'
+      const url = instanceUrl(i)
+      const id = i.username || i.user_name || '—'
       return `<tr>
         <td class="cell-mono">${escapeHtml(i.slug)}</td>
         <td>${escapeHtml(id)}</td>
@@ -463,27 +352,24 @@ async function renderUsers() {
 function drawUsers() {
   const q = ($('#search-users').value || '').toLowerCase()
   const rows = usersCache
-    .filter((u) => !q || [u.username, u.email, u.name, u.role].some((v) => String(v ?? '').toLowerCase().includes(q)))
+    .filter((u) => !q || [u.username, u.name, u.role].some((v) => String(v ?? '').toLowerCase().includes(q)))
     .map((u) => `<tr>
       <td>${escapeHtml(u.username || '—')}</td>
-      <td>${escapeHtml(u.email || '—')}</td>
       <td>${escapeHtml(u.name || '')}</td>
       <td><span class="badge ${u.role === 'admin' ? 'badge-running' : 'badge-stopped'}">${u.role}</span></td>
       <td>${fmtDate(u.created_at)}</td>
-      <td>${u.role !== 'admin' ? `<button class="btn btn-danger btn-sm" data-uid="${u.id}" data-act="deluser">${icon('trash', 14)} Delete</button>` : ''}</td>
+      <td>${u.role !== 'admin' ? `<button class="btn btn-ghost btn-sm" data-uid="${u.id}" data-act="reset-password">${icon('key', 14)} Reset password</button> <button class="btn btn-danger btn-sm" data-uid="${u.id}" data-act="deluser">${icon('trash', 14)} Delete</button>` : ''}</td>
     </tr>`).join('')
   $('#users-table').innerHTML = rows
-    ? `<div class="table-wrap"><table><thead><tr><th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="table-wrap"><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<p class="empty">No users found.</p>`
 }
 
 async function renderSettings() {
   try {
     const s = await api('/api/admin/settings')
-    $('#set-domains').value = s.emailDomains ?? ''
     $('#set-invite').value = s.inviteCode ?? ''
-    $('#settings-form').elements.otpRegistrationEnabled.checked = s.otpRegistrationEnabled
-    $('#settings-form').elements.passwordLoginEnabled.checked = s.passwordLoginEnabled
+    $('#settings-form').elements.registrationEnabled.checked = s.registrationEnabled
   } catch (err) { $('#settings-msg').textContent = err.message; $('#settings-msg').className = 'form-msg err' }
 }
 
@@ -506,10 +392,8 @@ $('#settings-form').addEventListener('submit', async (e) => {
   const btn = e.target.querySelector('button[type="submit"]')
   try {
     await withButtonLoading(btn, 'Saving…', () => api('/api/admin/settings', { method: 'POST', body: {
-      emailDomains: fd.get('emailDomains'),
       inviteCode: fd.get('inviteCode'),
-      otpRegistrationEnabled: fd.get('otpRegistrationEnabled') === 'on',
-      passwordLoginEnabled: fd.get('passwordLoginEnabled') === 'on',
+      registrationEnabled: fd.get('registrationEnabled') === 'on',
     }}))
     msg.textContent = 'Saved'
     msg.className = 'form-msg ok'
@@ -545,8 +429,25 @@ $('#instances-table').addEventListener('click', async (e) => {
 })
 
 $('#users-table').addEventListener('click', async (e) => {
-  const btn = e.target.closest('button[data-act="deluser"]')
+  const btn = e.target.closest('button[data-act]')
   if (!btn) return
+  if (btn.dataset.act === 'reset-password') {
+    const user = usersCache.find((u) => String(u.id) === btn.dataset.uid)
+    openModal({ title: `Reset password: ${user?.username ?? ''}`,
+      body: '<div class="field"><label for="reset-password">New password (at least 8 characters)</label><input id="reset-password" type="password" autocomplete="new-password" /></div><p id="reset-msg" class="form-msg"></p>',
+      footer: '<button class="btn btn-primary" id="reset-save">Reset password</button>',
+    })
+    $('#reset-save').addEventListener('click', async () => {
+      try {
+        await withButtonLoading($('#reset-save'), 'Saving…', () => api(`/api/admin/users/${btn.dataset.uid}/reset-password`, {
+          method: 'POST', body: { password: $('#reset-password').value },
+        }))
+        closeModal()
+        toast('Password reset; existing sessions signed out', 'ok')
+      } catch (err) { $('#reset-msg').textContent = err.message }
+    })
+    return
+  }
   const ok = await confirmModal('Delete user', 'Delete this user, their instance, and all its data? This cannot be undone.')
   if (!ok) return
   try {
@@ -577,7 +478,7 @@ async function boot() {
     me = user
     csrfToken = sessionCsrfToken
     $$('.csrf-token').forEach((input) => { input.value = csrfToken })
-    $('#whoami').textContent = user.username || user.email || user.name
+    $('#whoami').textContent = user.username || user.name
     showApp()
     $('#admin-nav').classList.toggle('hidden', user.role !== 'admin')
     $('#mobile-admin-nav').classList.toggle('hidden', user.role !== 'admin')

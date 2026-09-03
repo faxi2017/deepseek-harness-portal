@@ -32,7 +32,7 @@
       <!-- password login -->
       <form id="login-form" class="form" novalidate>
         <div class="field">
-          <label for="login-username">Username or email</label>
+          <label for="login-username">Username</label>
           <input id="login-username" name="username" autocomplete="username" required />
         </div>
         <div class="field">
@@ -43,53 +43,30 @@
           </div>
         </div>
         <button class="btn btn-primary btn-block" type="submit">Log in</button>
-        <button type="button" id="login-via-otp" class="link">Email me a code instead</button>
-      </form>
-
-      <!-- OTP login -->
-      <form id="login-otp-form" class="form hidden" novalidate>
-        <div class="field">
-          <label for="login-otp-email">Email</label>
-          <input id="login-otp-email" name="email" type="email" autocomplete="email" required />
-        </div>
-        <div class="field hidden" id="login-otp-code-row">
-          <label for="login-otp-code">6-digit code</label>
-          <input id="login-otp-code" name="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-        </div>
-        <button class="btn btn-primary btn-block" type="submit" id="login-otp-submit">Send code</button>
-        <button type="button" id="login-otp-back" class="link">Back to password login</button>
       </form>
 
       <!-- registration -->
       <form id="register-form" class="form hidden" novalidate>
         <div class="field">
-          <label for="reg-email">Email</label>
-          <input id="reg-email" name="email" type="email" autocomplete="email" required />
+          <label for="reg-username">Username <span class="opt">(3–32 letters, digits, . _ -)</span></label>
+          <input id="reg-username" name="username" autocomplete="username" required minlength="3" maxlength="32" />
         </div>
         <div class="field">
-          <label for="reg-name">Name <span class="opt">(optional — used for your subdomain)</span></label>
-          <input id="reg-name" name="name" autocomplete="name" />
-        </div>
-        <div class="field">
-          <label for="reg-username">Username <span class="opt">(optional — used to log in)</span></label>
-          <input id="reg-username" name="username" autocomplete="username" />
-        </div>
-        <div class="field">
-          <label for="reg-password">Password <span class="opt">(optional — set it now to log in with it)</span></label>
+          <label for="reg-password">Password <span class="opt">(at least 8 characters)</span></label>
           <div class="pw-row">
-            <input id="reg-password" name="password" type="password" autocomplete="new-password" />
+            <input id="reg-password" name="password" type="password" autocomplete="new-password" required minlength="8" />
             <button type="button" class="pw-toggle" data-pw="reg-password" title="Show password"><span class="nav-icon" data-icon="eye"></span></button>
           </div>
+        </div>
+        <div class="field">
+          <label for="reg-confirm">Confirm password</label>
+          <input id="reg-confirm" name="confirmPassword" type="password" autocomplete="new-password" required />
         </div>
         <div class="field hidden" id="register-invite-row">
           <label for="reg-invite">Invitation code</label>
           <input id="reg-invite" name="inviteCode" autocomplete="off" />
         </div>
-        <div class="field hidden" id="register-otp-row">
-          <label for="reg-otp">6-digit code</label>
-          <input id="reg-otp" name="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-        </div>
-        <button class="btn btn-primary btn-block" type="submit" id="register-submit">Send code</button>
+        <button class="btn btn-primary btn-block" type="submit" id="register-submit">Create account</button>
       </form>
 
       <p id="auth-msg" class="form-msg" role="alert"></p>
@@ -220,10 +197,6 @@
             <h2>Settings</h2>
             <form id="settings-form" class="form form-narrow">
               <div class="field">
-                <label for="set-domains">Allowed email domains <span class="opt">(comma-separated; empty = allow all)</span></label>
-                <input id="set-domains" name="emailDomains" placeholder="company.com, gmail.com" />
-              </div>
-              <div class="field">
                 <label for="set-invite">Invitation code <span class="opt">(optional; empty = open registration)</span></label>
                 <div class="input-row">
                   <input id="set-invite" name="inviteCode" autocomplete="off" placeholder="leave blank to disable" />
@@ -231,8 +204,7 @@
                   <button type="button" class="btn btn-ghost" id="copy-invite" title="Copy"><span class="nav-icon" data-icon="copy"></span></button>
                 </div>
               </div>
-              <label class="check"><input type="checkbox" name="otpRegistrationEnabled" /> Allow new registrations (email OTP)</label>
-              <label class="check"><input type="checkbox" name="passwordLoginEnabled" /> Allow password login</label>
+              <label class="check"><input type="checkbox" name="registrationEnabled" /> Allow new registrations</label>
               <button class="btn btn-primary" type="submit">Save settings</button>
             </form>
             <p id="settings-msg" class="form-msg"></p>

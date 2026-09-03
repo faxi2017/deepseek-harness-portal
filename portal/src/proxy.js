@@ -1,8 +1,10 @@
 import httpProxy from 'http-proxy'
+import http from 'node:http'
 import { config } from './config.js'
-import { getInstanceBySlug, touchInstanceRequest, updateInstanceUnlessDeleting, userForSession } from './db.js'
+import { getInstanceBySlug, getInstanceByHostPort, touchInstanceRequest, updateInstanceUnlessDeleting, userForSession } from './db.js'
 import { startContainer, containerRunning, waitHealthy } from './orchestrator.js'
 import { SESSION_COOKIE } from './auth.js'
+import { instanceHostPort, trustedInstanceRequest } from './routing.js'
 
 // changeOrigin: rewrite Host to the target (127.0.0.1:port) so the instance's
 // trust fence sees loopback. dsh gates settings/credentials methods to loopback,
@@ -129,8 +131,41 @@ function ensureRunning(inst) {
  * onRequest hook (HTTP) plus a raw server 'upgrade' listener (WebSocket).
  */
 export function setupProxy(fastify) {
+  const listeners = []
+  // Reuse the same Fastify request and upgrade handlers; the actual listener
+  // port, never an untrusted forwarded header, selects the tenant.
+  if (config.instanceRouting === 'ports') {
+    fastify.addHook('onReady', async () => {
+      try {
+        for (let port = config.instancePortStart; port <= config.instancePortStart + config.portRangeEnd - config.portRangeStart; port++) {
+          const server = http.createServer((req, res) => fastify.server.emit('request', req, res))
+          server.on('upgrade', (req, socket, head) => fastify.server.emit('upgrade', req, socket, head))
+          await new Promise((resolve, reject) => {
+            server.once('error', reject)
+            server.listen(port, config.host, resolve)
+          })
+          listeners.push(server)
+        }
+      } catch (error) {
+        for (const server of listeners) server.close()
+        throw error
+      }
+    })
+    fastify.addHook('onClose', async () => {
+      for (const tracked of activeWebSockets) tracked.socket.destroy()
+      await Promise.all(listeners.map((server) => new Promise((resolve) => {
+        server.close(resolve)
+        server.closeAllConnections()
+      })))
+    })
+  }
+  function requestSlug(req) {
+    if (config.instanceRouting === 'subdomains') return slugFromHost(req.headers.host)
+    if (req.socket.localPort === config.port) return null
+    return getInstanceByHostPort(instanceHostPort(req.socket.localPort))?.slug ?? ''
+  }
   fastify.addHook('onRequest', async (req, reply) => {
-    const slug = slugFromHost(req.headers.host)
+    const slug = requestSlug(req.raw)
     if (slug === null) return // apex -> normal portal routing
 
     const inst = getInstanceBySlug(slug)
@@ -138,9 +173,12 @@ export function setupProxy(fastify) {
       reply.code(404).type('text/plain').send('instance not found')
       return
     }
+    if (!trustedInstanceRequest(req.raw, inst)) return reply.code(403).send('invalid instance origin')
     const user = userForSession(req.cookies?.[SESSION_COOKIE])
     if (!mayAccess(user, inst)) {
-      reply.code(302).header('location', `https://${config.domain}/login`).send()
+      reply.code(user ? 403 : 302)
+      if (!user) reply.header('location', `${config.portalOrigin}/`)
+      reply.send('not authorized')
       return reply
     }
     // Auto-start on access (launch always works); start is fast for a stopped
@@ -167,13 +205,17 @@ export function setupProxy(fastify) {
   })
 
   async function handleUpgrade(req, socket, head) {
-    const slug = slugFromHost(req.headers.host)
+    const slug = requestSlug(req)
     if (slug === null) {
       socket.destroy()
       return
     }
     const inst = getInstanceBySlug(slug)
     if (inst === null) {
+      socket.destroy()
+      return
+    }
+    if (!trustedInstanceRequest(req, inst, { upgrade: true })) {
       socket.destroy()
       return
     }
@@ -220,7 +262,7 @@ export function setupProxy(fastify) {
   }
 
   // EventEmitter does not await async listeners. Convert rejections into a
-  // closed socket so malformed input or Podman errors cannot become an
+  // closed socket so malformed input or Docker errors cannot become an
   // unhandled rejection that terminates the portal process.
   fastify.server.on('upgrade', (req, socket, head) => {
     void handleUpgrade(req, socket, head).catch((err) => {

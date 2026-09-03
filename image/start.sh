@@ -1,11 +1,8 @@
 #!/bin/bash
 set -euo pipefail
-
-PORT="${PORT:-3000}"
-ARGS=(web --host 0.0.0.0 --port "$PORT")
+args=(web --no-open --host 0.0.0.0 --port "${PORT:-3000}")
 if [ -n "${TRUSTED_HOST:-}" ]; then
-  ARGS+=(--trusted-host "$TRUSTED_HOST")
+  args+=(--trusted-host "$TRUSTED_HOST")
 fi
-
-cd /app/dsh
-exec node --import tsx/esm apps/cli/src/bin.ts "${ARGS[@]}"
+cd /workspace
+exec node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js "${args[@]}"

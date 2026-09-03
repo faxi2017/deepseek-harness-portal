@@ -1,23 +1,12 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import net from 'node:net'
 import http from 'node:http'
 import { config } from './config.js'
 import { db, getInstanceById, updateInstanceUnlessDeleting } from './db.js'
 
-const run = promisify(execFile)
+import { docker, inspectObject, missingObject, ensureNetwork, applyFirewall } from './docker.js'
 const runningCache = new Map()
 const lifecycleLocks = new Map()
 const RUNNING_CACHE_TTL_MS = 2000
-
-function podman(args, opts = {}) {
-  return run('podman', args, {
-    windowsHide: true,
-    maxBuffer: 10 * 1024 * 1024,
-    timeout: config.podmanCommandTimeoutMs,
-    ...opts,
-  })
-}
 
 function withLifecycleLock(name, operation) {
   const previous = lifecycleLocks.get(name) ?? Promise.resolve()
@@ -32,32 +21,28 @@ function invalidateRunning(name) {
   runningCache.delete(name)
 }
 
-function isMissingContainerError(error) {
-  const text = String(error?.stderr ?? error?.message ?? '').toLowerCase()
-  return text.includes('no such container')
-    || text.includes('no container with name or id')
-    || text.includes('no such object')
-}
-
 export function containerName(slug) {
   return `dsh-${slug}`
 }
 
 export async function ensureImage() {
   try {
-    await podman(['image', 'exists', config.image])
+    if (!(await inspectObject('image', config.image))) throw new Error('missing image')
   } catch {
     throw new Error(`approved image "${config.image}" not found; run ./build-image.sh and configure its sha256 ID`)
   }
 }
 
-export async function verifyPodmanRuntime() {
-  const { stdout } = await podman(['info', '--format', '{{.Host.Security.Rootless}}'])
-  if (stdout.trim() !== 'true') throw new Error('Podman must run rootless')
+export async function verifyDockerRuntime() {
+  const { stdout } = await docker(['info', '--format', '{{json .}}'])
+  const info = JSON.parse(stdout)
+  if (info.OSType !== 'linux') throw new Error('Docker must be running Linux containers')
+  if (info.SecurityOptions?.some((value) => value.includes('rootless'))) {
+    throw new Error('This Docker network isolation implementation requires a rootful Linux daemon or Docker Desktop')
+  }
   await ensureImage()
-  // This is the definitive network-driver check and performs no persistent
-  // writes or mounts. It fails portal startup if pasta is unavailable.
-  await podman(['run', '--rm', '--network', config.instanceNetwork, '--entrypoint', '/bin/true', config.image])
+  const network = await ensureNetwork()
+  await applyFirewall(network)
 }
 
 async function createContainerUnlocked({ slug, hostPort }) {
@@ -72,7 +57,9 @@ async function createContainerUnlocked({ slug, hostPort }) {
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
     '--network', config.instanceNetwork,
-    '--log-driver', 'k8s-file', '--log-opt', `max-size=${config.instanceLogSize}`,
+    '--log-driver', 'local', '--log-opt', `max-size=${config.instanceLogSize}`, '--log-opt', 'max-file=3',
+    '--label', 'dsh.portal.managed=true',
+    '--user', '1000:1000',
     '-p', `127.0.0.1:${hostPort}:3000`,
     '-v', `${name}-home:/home/dsh`,
     '-v', `${name}-workspace:/workspace`,
@@ -83,7 +70,7 @@ async function createContainerUnlocked({ slug, hostPort }) {
   ]
   if (config.instanceReadOnlyRoot) args.push('--read-only')
   args.push(config.image)
-  await podman(args)
+  await docker(args)
   invalidateRunning(name)
 }
 
@@ -94,7 +81,7 @@ export function createContainer({ slug, hostPort }) {
 
 async function startContainerUnlocked(name) {
   invalidateRunning(name)
-  await podman(['start', name])
+  await docker(['start', name])
   invalidateRunning(name)
 }
 
@@ -104,7 +91,7 @@ export function startContainer(name) {
 
 async function stopContainerUnlocked(name) {
   invalidateRunning(name)
-  await podman(['stop', '-t', '15', name], { timeout: Math.max(config.podmanCommandTimeoutMs, 30000) })
+  await docker(['stop', '-t', '15', name], { timeout: Math.max(config.dockerCommandTimeoutMs, 30000) })
   invalidateRunning(name)
 }
 
@@ -113,17 +100,11 @@ export function stopContainer(name) {
 }
 
 async function objectExists(kind, name) {
-  try {
-    await podman([kind, 'exists', name])
-    return true
-  } catch (err) {
-    if (err?.code === 1 || err?.code === '1') return false
-    throw err
-  }
+  return (await inspectObject(kind, name)) !== null
 }
 
 async function removeExistingContainerUnlocked(name) {
-  if (await objectExists('container', name)) await podman(['rm', '-f', name])
+  if (await objectExists('container', name)) await docker(['rm', '-f', name])
   if (await objectExists('container', name)) throw new Error(`container "${name}" still exists after removal`)
   invalidateRunning(name)
 }
@@ -133,8 +114,8 @@ export function removeContainer(name) {
     await removeExistingContainerUnlocked(name)
     for (const volume of [`${name}-home`, `${name}-workspace`]) {
       // Never force-remove tenant data. If anything reattaches the volume,
-      // Podman must fail and the deleting DB tombstone remains for retry.
-      if (await objectExists('volume', volume)) await podman(['volume', 'rm', volume])
+      // Docker must fail and the deleting DB tombstone remains for retry.
+      if (await objectExists('volume', volume)) await docker(['volume', 'rm', volume])
       if (await objectExists('volume', volume)) throw new Error(`volume "${volume}" still exists after removal`)
     }
   })
@@ -151,10 +132,10 @@ export async function containerRunning(name, { fresh = false } = {}) {
   if (cached?.pending) return cached.pending
   if (!fresh && cached && cached.expiresAt > now) return cached.value
 
-  const pending = podman(['inspect', '-f', '{{.State.Running}}', name])
+  const pending = docker(['inspect', '-f', '{{.State.Running}}', name])
     .then(({ stdout }) => stdout.trim() === 'true')
     .catch((error) => {
-      if (isMissingContainerError(error)) return false
+      if (missingObject(error)) return false
       throw error
     })
   const entry = { pending }
@@ -175,7 +156,7 @@ export async function containerRunning(name, { fresh = false } = {}) {
 
 export async function containerLogs(name, tail = 200) {
   try {
-    const { stdout } = await podman(['logs', '--tail', String(tail), name])
+    const { stdout } = await docker(['logs', '--tail', String(tail), name])
     return stdout
   } catch (error) {
     return String(error?.stderr ?? error?.message ?? error)
@@ -205,27 +186,21 @@ function isPortFree(port) {
 }
 
 /** Poll the instance's HTTP root until 200 or timeout. */
-export function waitHealthy(hostPort, timeoutMs) {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + timeoutMs
-    const check = () => {
-      const req = http.get(
-        { host: '127.0.0.1', port: hostPort, path: '/', timeout: 5000 },
-        (res) => {
-          res.resume()
-          if (res.statusCode === 200) return resolve(true)
-          schedule()
-        },
-      )
-      req.on('error', schedule)
-      req.on('timeout', () => { req.destroy(); schedule() })
-      function schedule() {
-        if (Date.now() >= deadline) return resolve(false)
-        setTimeout(check, 2000)
-      }
-    }
-    check()
-  })
+export async function waitHealthy(hostPort, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const healthy = await new Promise((resolve) => {
+      const req = http.get({ host: '127.0.0.1', port: hostPort, path: '/', timeout: Math.min(5000, deadline - Date.now()) }, (res) => {
+        res.resume()
+        resolve(res.statusCode === 200)
+      })
+      req.once('error', () => resolve(false))
+      req.once('timeout', () => req.destroy(new Error('health check timeout')))
+    })
+    if (healthy) return true
+    if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, Math.min(2000, deadline - Date.now())))
+  }
+  return false
 }
 
 /** Provision one instance under a per-container lock. */

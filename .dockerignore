@@ -1,20 +1,2 @@
-# Deny by default: the image build only needs the upstream dsh source and the
-# tracked image files below. Portal configuration, data, logs, and Git metadata must
-# never be transmitted to the Podman builder.
+# Builds must use image/ as their context; deny root-context builds.
 *
-!dsh/
-!dsh/**
-!image/
-!image/Dockerfile
-!image/start.sh
-!image/dsh-security.patch
-
-# Defense in depth inside the explicitly included trees.
-dsh/.git
-dsh/**/.git
-dsh/node_modules
-dsh/**/node_modules
-dsh/**/.env
-dsh/**/.env.*
-dsh/**/*.log
-dsh/**/.cache

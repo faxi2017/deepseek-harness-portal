@@ -1,5 +1,7 @@
 # Security Audit Report
 
+> Historical audit of the upstream source/Podman deployment. This report does not certify this branch's Docker runtime, port routing, password registration, or npm latest DSH image. See project_context.md for current verification.
+
 **Project:** DeepSeek Harness Portal  
 **Audit date:** 2026-08-16  
 **Portal commit:** `9eaa7be06fa1307d418b77f41747bd7641964fad`  

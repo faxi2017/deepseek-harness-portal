@@ -118,7 +118,7 @@ db.exec(`
 
 // ---- users ----
 
-export function createUser({ email, username = null, name, passwordHash = null, role = 'user' }) {
+export function createUser({ email = null, username = null, name, passwordHash = null, role = 'user' }) {
   return db.prepare(
     'INSERT INTO users (email, username, name, password_hash, role, created_at) VALUES (?,?,?,?,?,?)',
   ).run(email, username, name, passwordHash, role, Date.now()).lastInsertRowid
@@ -198,6 +198,10 @@ export function createInstanceRow({ userId, slug, containerName, hostPort }) {
 
 export function getInstanceBySlug(slug) {
   return db.prepare('SELECT * FROM instances WHERE slug = ?').get(slug) ?? null
+}
+
+export function getInstanceByHostPort(hostPort) {
+  return db.prepare('SELECT * FROM instances WHERE host_port = ?').get(hostPort) ?? null
 }
 
 export function getInstanceByUserId(userId) {
@@ -310,15 +314,21 @@ export function ensureAdmin() {
 
   const password = String(config.adminPassword ?? '')
   const placeholder = /^(?:change-?me(?:-?now)?|password|admin|example)$/i.test(password)
-  if (!config.adminEmail || !config.adminName || password.length < 16 || placeholder) {
-    throw new Error('no admin exists: set ADMIN_EMAIL, ADMIN_NAME, and a non-placeholder ADMIN_PASSWORD of at least 16 characters')
+  if (!/^[a-z0-9._-]{3,32}$/i.test(config.adminName) || password.length < 16 || Buffer.byteLength(password) > 72 || placeholder) {
+    throw new Error('no admin exists: set ADMIN_NAME (3-32 account characters) and ADMIN_PASSWORD (16+ characters, at most 72 bytes)')
   }
   createUser({
-    email: config.adminEmail,
+    email: null,
     username: config.adminName.toLowerCase(),
     name: config.adminName,
     passwordHash: bcrypt.hashSync(password, 10),
     role: 'admin',
   })
-  console.log(`[portal] seeded admin "${config.adminEmail}"`)
+  console.log(`[portal] seeded admin "${config.adminName}"`)
+}
+
+// Preserve the old registration switch when upgrading an existing database.
+export function registrationEnabled() {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'registration_enabled'").get()
+  return row ? row.value !== 'false' : otpRegistrationEnabled()
 }

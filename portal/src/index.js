@@ -6,30 +6,28 @@ import { dirname, join } from 'node:path'
 
 import { config, validateConfig } from './config.js'
 import {
-  createInstanceRow, createUser, deleteAllSessionsForUser, deleteInstance,
-  deleteUser, ensureAdmin, getEmailDomains, getInstanceById, getInstanceByUserId,
-  getInstanceBySlug, getInviteCode, getUserByEmail, getUserById,
-  getUserByUsername, listInstancesWithUsers, listUsers, otpRegistrationEnabled,
-  passwordLoginEnabled, purgeExpiredSessions, setInviteCode, setSetting, setUserPassword,
+  db, createInstanceRow, createUser, deleteAllSessionsForUser, deleteInstance,
+  deleteUser, ensureAdmin, getInstanceById, getInstanceByUserId,
+  getInstanceBySlug, getInviteCode, getUserById,
+  getUserByUsername, listInstancesWithUsers, listUsers, registrationEnabled,
+  purgeExpiredSessions, setInviteCode, setSetting, setUserPassword,
   sessionForToken, updateInstance, updateInstanceUnlessDeleting, updateUser, userForSession,
 } from './db.js'
 import {
-  createSession, destroySession, hashPassword, isValidEmail, LEGACY_SESSION_COOKIES,
-  normalizeEmail, verifyCsrfToken, verifyPassword, verifyPasswordOrDummy, SESSION_COOKIE,
+  createSession, destroySession, hashPassword, LEGACY_SESSION_COOKIES,
+  verifyCsrfToken, verifyPassword, verifyPasswordOrDummy, SESSION_COOKIE,
 } from './auth.js'
-import { generateOtpCode, storeOtpCode, verifyOtp } from './otp.js'
-import { sendOtpCode } from './mailer.js'
-import { completeEmailChange, requestEmailChangeProofs } from './email-change.js'
 import { RATE_POLICIES, clearRateLimit, clientIp, consumeRateLimit } from './rate-limit.js'
 import {
   allocatePort, containerLogs, containerName, containerRunning, provision,
-  removeContainer, startContainer, stopContainer, verifyPodmanRuntime,
+  removeContainer, startContainer, stopContainer, verifyDockerRuntime,
 } from './orchestrator.js'
 import { closeUserSockets, setupProxy } from './proxy.js'
+import { instanceUrl } from './routing.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const fastify = Fastify({ logger: false })
+export const fastify = Fastify({ logger: false })
 
 await fastify.register(cookie)
 fastify.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
@@ -45,7 +43,7 @@ await fastify.register(fastifyStatic, {
 })
 
 validateConfig()
-await verifyPodmanRuntime()
+await verifyDockerRuntime()
 purgeExpiredSessions()
 ensureAdmin()
 setupProxy(fastify)
@@ -74,13 +72,13 @@ fastify.addHook('onSend', async (req, reply) => {
 
 // ---- helpers ---------------------------------------------------------------
 
-const publicUser = (u) => (u ? { id: u.id, email: u.email, username: u.username, name: u.name, role: u.role } : null)
+const publicUser = (u) => (u ? { id: u.id, username: u.username, name: u.name, role: u.role } : null)
 
 function setSessionCookie(reply, token) {
   reply.setCookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: config.cookieDomain !== '',
+    secure: config.portalOrigin.startsWith('https:'),
     path: '/',
     ...(config.cookieDomain ? { domain: config.cookieDomain } : {}),
     maxAge: Math.floor(config.sessionAbsoluteTtlMs / 1000),
@@ -111,10 +109,7 @@ function requireAdmin(req, reply) {
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
-const PREAUTH_MUTATIONS = new Set([
-  '/api/auth/register/request', '/api/auth/register/verify',
-  '/api/auth/login', '/api/auth/login/request', '/api/auth/login/verify',
-])
+const PREAUTH_MUTATIONS = new Set(['/api/auth/register', '/api/auth/login'])
 
 // Tenant subdomains are same-site with the portal, so SameSite cookies alone do
 // not stop CSRF. Require the exact configured portal origin for every API
@@ -171,129 +166,55 @@ const RESERVED_SLUGS = new Set([
   config.domain.split('.')[0].toLowerCase(), 'www', 'admin', 'portal', 'api', 'app', 'dsh',
 ])
 
-function emailAllowed(email) {
-  const domains = getEmailDomains()
-  if (domains.length === 0) return true
-  const domain = email.split('@')[1]
-  return domain !== undefined && domains.includes(domain.toLowerCase())
-}
-
 async function uniqueSlug(base) {
   let slug = RESERVED_SLUGS.has(base) ? `${base}-1` : base
   for (let i = 2; getInstanceBySlug(slug) !== null; i++) slug = `${base}-${i}`
   return slug
 }
 
-function slugBaseFor(email, name) {
-  const base = typeof name === 'string' && name.trim() !== ''
-    ? name
-    : (email ?? '').split('@')[0]
-  return slugify(base || 'user')
-}
-
-// ---- auth: register (email OTP) -------------------------------------------
-
-fastify.post('/api/auth/register/request', async (req, reply) => {
-  if (!otpRegistrationEnabled()) {
-    return reply.code(403).send({ error: 'registration is disabled' })
+// Serialize allocation so concurrent registrations cannot claim the same port.
+let registrationQueue = Promise.resolve()
+fastify.post('/api/auth/register', async (req, reply) => {
+  if (!registrationEnabled()) return reply.code(403).send({ error: 'registration is disabled' })
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : ''
+  const password = req.body?.password
+  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.registerIp, RATE_POLICIES.registerAccount, username)) return
+  if (!/^[a-z0-9._-]{3,32}$/.test(username)) return reply.code(400).send({ error: 'username: 3-32 chars (letters, digits, . _ -)' })
+  if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password) > 72) {
+    return reply.code(400).send({ error: 'password: at least 8 characters, at most 72 bytes' })
   }
-  const email = normalizeEmail(req.body?.email)
-  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.registerIp, RATE_POLICIES.registerAccount, email)) return
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.otpResendAccount, `register:${email}`, {
-    windowMs: config.otpResendCooldownMs, blockMs: config.otpResendCooldownMs,
-  })) return
-
   const invite = getInviteCode()
   if (invite !== '') {
     if (!enforceRateLimit(req, reply, RATE_POLICIES.inviteIp, clientIp(req))) return
     if (!enforceRateLimit(req, reply, RATE_POLICIES.inviteGlobal, 'global')) return
-    if (String(req.body?.inviteCode ?? '').trim() !== invite) {
-      return reply.code(403).send({ error: 'invalid invitation code' })
-    }
+    if (String(req.body?.inviteCode ?? '').trim() !== invite) return reply.code(403).send({ error: 'invalid invitation code' })
   }
-  if (!isValidEmail(email)) return reply.code(400).send({ error: 'enter a valid email address' })
-  if (!emailAllowed(email)) return reply.code(403).send({ error: 'this email domain is not allowed to register' })
-
-  // Consume the delivery quota for eligible known and unknown addresses alike,
-  // then respond before SMTP finishes to avoid an account-existence timing path.
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.smtpGlobal, 'global')) return
-  if (!getUserByEmail(email)) {
-    const code = generateOtpCode()
-    void sendOtpCode(email, code)
-      .then(() => storeOtpCode(email, 'register', code))
-      .catch((err) => console.error('[otp] registration delivery failed:', err?.message ?? err))
-  }
-  return reply.code(202).send({ ok: true, message: 'If registration is available, a code has been sent.' })
+  const operation = registrationQueue.catch(() => {}).then(async () => {
+    if (getUserByUsername(username)) return reply.code(409).send({ error: 'username already taken' })
+    let hostPort
+    try { hostPort = await allocatePort() }
+    catch { return reply.code(503).send({ error: 'no instance capacity available; contact admin' }) }
+    const slug = await uniqueSlug(slugify(username) + config.instanceSlugSuffix)
+    const result = db.transaction(() => {
+      const userId = createUser({ username, name: username, passwordHash: hashPassword(password) })
+      const instId = createInstanceRow({ userId, slug, containerName: containerName(slug), hostPort })
+      return { userId, instId }
+    })()
+    provision(result.instId).catch((err) => console.error('[provision]', err))
+    clearRateLimit(RATE_POLICIES.registerAccount, username)
+    const session = createSession(result.userId)
+    setSessionCookie(reply, session.token)
+    const instance = getInstanceById(result.instId)
+    return { user: publicUser(getUserById(result.userId)), instance: { ...instance, url: instanceUrl(instance) }, csrfToken: session.csrfToken }
+  })
+  registrationQueue = operation
+  return operation
 })
-
-fastify.post('/api/auth/register/verify', async (req, reply) => {
-  if (!otpRegistrationEnabled()) {
-    return reply.code(403).send({ error: 'registration is disabled' })
-  }
-  const email = normalizeEmail(req.body?.email)
-  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.registerIp, RATE_POLICIES.registerAccount, email)) return
-  const invite = getInviteCode()
-  if (invite !== '') {
-    if (!enforceRateLimit(req, reply, RATE_POLICIES.inviteIp, clientIp(req))) return
-    if (!enforceRateLimit(req, reply, RATE_POLICIES.inviteGlobal, 'global')) return
-    if (String(req.body?.inviteCode ?? '').trim() !== invite) {
-      return reply.code(400).send({ error: 'registration verification failed' })
-    }
-  }
-  const otp = String(req.body?.otp ?? '')
-  const username = typeof req.body?.username === 'string' && req.body.username.trim() !== ''
-    ? req.body.username.trim().toLowerCase().slice(0, 32)
-    : null
-  const password = typeof req.body?.password === 'string' && req.body.password !== '' ? req.body.password : null
-
-  // Validate all non-OTP fields first. A fixable username/password error must
-  // not consume the email proof and force the user to request another code.
-  if (username !== null && !/^[a-z0-9._-]{3,32}$/.test(username)) {
-    return reply.code(400).send({ error: 'username: 3-32 chars (letters, digits, . _ -)' })
-  }
-  if (password !== null && password.length < 8) {
-    return reply.code(400).send({ error: 'password must be at least 8 characters' })
-  }
-  if (!isValidEmail(email) || !emailAllowed(email) || getUserByEmail(email)
-      || (username !== null && getUserByUsername(username))) {
-    return reply.code(400).send({ error: 'registration verification failed' })
-  }
-
-  const v = verifyOtp(email, 'register', otp)
-  if (!v.ok) return reply.code(400).send({ error: 'registration verification failed' })
-
-  const name = typeof req.body?.name === 'string' && req.body.name.trim() !== ''
-    ? req.body.name.trim().slice(0, 64)
-    : email.split('@')[0]
-
-  const userId = createUser({ email, username, name, passwordHash: password !== null ? hashPassword(password) : null, role: 'user' })
-  let instance = null
-  try {
-    const slug = await uniqueSlug(`${slugBaseFor(email, name)}${config.instanceSlugSuffix}`)
-    const hostPort = await allocatePort()
-    const cname = containerName(slug)
-    const instId = createInstanceRow({ userId, slug, containerName: cname, hostPort })
-    instance = getInstanceById(instId)
-    provision(instId).catch((err) => console.error('[provision]', err))
-  } catch (err) {
-    console.error('[register] instance provisioning setup failed:', err)
-  }
-
-  clearRateLimit(RATE_POLICIES.registerAccount, email)
-  const session = createSession(userId)
-  setSessionCookie(reply, session.token)
-  return { user: publicUser(getUserById(userId)), instance, csrfToken: session.csrfToken }
-})
-
-// ---- auth: login (password OR OTP) ----------------------------------------
 
 fastify.post('/api/auth/login', async (req, reply) => {
-  if (!passwordLoginEnabled()) {
-    return reply.code(403).send({ error: 'password login is disabled; use email verification' })
-  }
   const identifier = String(req.body?.username ?? '').trim().toLowerCase()
   const password = String(req.body?.password ?? '')
-  const user = getUserByUsername(identifier) ?? getUserByEmail(identifier)
+  const user = getUserByUsername(identifier)
   const subject = user ? `user:${user.id}` : `identifier:${identifier}`
   if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.passwordIp, RATE_POLICIES.passwordAccount, subject)) return
   const validPassword = verifyPasswordOrDummy(password, user?.password_hash)
@@ -301,37 +222,6 @@ fastify.post('/api/auth/login', async (req, reply) => {
     return reply.code(401).send({ error: 'invalid username or password' })
   }
   clearRateLimit(RATE_POLICIES.passwordAccount, subject)
-  const session = createSession(user.id)
-  setSessionCookie(reply, session.token)
-  return { user: publicUser(user), csrfToken: session.csrfToken }
-})
-
-fastify.post('/api/auth/login/request', async (req, reply) => {
-  const email = normalizeEmail(req.body?.email)
-  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.otpRequestIp, RATE_POLICIES.otpRequestAccount, email)) return
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.otpResendAccount, `login:${email}`, {
-    windowMs: config.otpResendCooldownMs, blockMs: config.otpResendCooldownMs,
-  })) return
-
-  const user = isValidEmail(email) ? getUserByEmail(email) : null
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.smtpGlobal, 'global')) return
-  if (user) {
-    const code = generateOtpCode()
-    void sendOtpCode(email, code)
-      .then(() => storeOtpCode(email, 'login', code))
-      .catch((err) => console.error('[otp] login delivery failed:', err?.message ?? err))
-  }
-  return reply.code(202).send({ ok: true, message: 'If an account exists, a code has been sent.' })
-})
-
-fastify.post('/api/auth/login/verify', async (req, reply) => {
-  const email = normalizeEmail(req.body?.email)
-  const otp = String(req.body?.otp ?? '')
-  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.otpVerifyIp, RATE_POLICIES.otpVerifyAccount, email)) return
-  const user = isValidEmail(email) ? getUserByEmail(email) : null
-  const v = user ? verifyOtp(email, 'login', otp) : { ok: false }
-  if (!user || !v.ok) return reply.code(401).send({ error: 'invalid or expired verification code' })
-  clearRateLimit(RATE_POLICIES.otpVerifyAccount, email)
   const session = createSession(user.id)
   setSessionCookie(reply, session.token)
   return { user: publicUser(user), csrfToken: session.csrfToken }
@@ -372,7 +262,7 @@ function clearSessionAndCookies(req, reply) {
       reply.clearCookie(name, {
         path: '/',
         sameSite: 'lax',
-        secure: config.cookieDomain !== '',
+        secure: config.portalOrigin.startsWith('https:'),
         ...(scope ? { domain: scope } : {}),
       })
     }
@@ -397,7 +287,7 @@ fastify.get('/api/auth/me', async (req, reply) => {
 fastify.get('/api/profile', async (req, reply) => {
   const user = requireUser(req, reply)
   if (!user) return
-  return { name: user.name, email: user.email, username: user.username, hasPassword: Boolean(user.password_hash) }
+  return { name: user.name, username: user.username, hasPassword: Boolean(user.password_hash) }
 })
 
 fastify.post('/api/profile', async (req, reply) => {
@@ -405,7 +295,7 @@ fastify.post('/api/profile', async (req, reply) => {
   if (!user) return
 
   const fields = {}
-  const { username, name, email, currentPassword, newPassword } = req.body ?? {}
+  const { username, name, currentPassword, newPassword } = req.body ?? {}
 
   if (username !== undefined) {
     const u = String(username).trim().toLowerCase()
@@ -422,11 +312,8 @@ fastify.post('/api/profile', async (req, reply) => {
     if (n.length < 1 || n.length > 64) return reply.code(400).send({ error: 'name must be 1-64 characters' })
     fields.name = n
   }
-  if (email !== undefined && normalizeEmail(email) !== user.email) {
-    return reply.code(400).send({ error: 'use the verified email-change flow' })
-  }
   if (newPassword !== undefined && newPassword !== '') {
-    if (typeof newPassword !== 'string' || newPassword.length < 8) {
+    if (typeof newPassword !== 'string' || newPassword.length < 8 || Buffer.byteLength(newPassword) > 72) {
       return reply.code(400).send({ error: 'password must be at least 8 characters' })
     }
     if (user.password_hash) {
@@ -450,73 +337,9 @@ fastify.post('/api/profile', async (req, reply) => {
   }
   const fresh = getUserById(user.id)
   return {
-    name: fresh.name, email: fresh.email, username: fresh.username,
+    name: fresh.name, username: fresh.username,
     hasPassword: Boolean(fresh.password_hash),
     ...(rotatedSession ? { csrfToken: rotatedSession.csrfToken } : {}),
-  }
-})
-
-fastify.post('/api/profile/email-change/request', async (req, reply) => {
-  const user = requireUser(req, reply)
-  if (!user) return
-  const newEmail = normalizeEmail(req.body?.newEmail)
-  const subject = `profile-email:user:${user.id}`
-  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.otpRequestIp, RATE_POLICIES.otpRequestAccount, subject)) return
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.otpResendAccount, subject, {
-    windowMs: config.otpResendCooldownMs, blockMs: config.otpResendCooldownMs,
-  })) return
-  if (!isValidEmail(newEmail)) return reply.code(400).send({ error: 'enter a valid email address' })
-  if (!emailAllowed(newEmail)) return reply.code(403).send({ error: 'this email domain is not allowed' })
-  if (newEmail === user.email) return reply.code(400).send({ error: 'enter a different email address' })
-  if (getUserByEmail(newEmail)) return reply.code(409).send({ error: 'that email is already in use' })
-  // One approved request sends two separately bound proofs.
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.smtpGlobal, 'global')) return
-  if (!enforceRateLimit(req, reply, RATE_POLICIES.smtpGlobal, 'global')) return
-  try {
-    await requestEmailChangeProofs(user, newEmail)
-  } catch (error) {
-    console.error('[profile] email-change delivery failed:', error?.message ?? error)
-    return reply.code(502).send({ error: 'verification email delivery failed; try again later' })
-  }
-  return reply.code(202).send({ ok: true, message: 'Codes were sent to your current and new email addresses.' })
-})
-
-fastify.post('/api/profile/email-change/verify', async (req, reply) => {
-  const user = requireUser(req, reply)
-  if (!user) return
-  const newEmail = normalizeEmail(req.body?.newEmail)
-  const currentCode = String(req.body?.currentOtp ?? '')
-  const newCode = String(req.body?.newOtp ?? '')
-  const subject = `profile-email:user:${user.id}`
-  if (!enforceIpAndSubjectLimit(req, reply, RATE_POLICIES.otpVerifyIp, RATE_POLICIES.otpVerifyAccount, subject)) return
-  if (!isValidEmail(newEmail) || !emailAllowed(newEmail) || newEmail === user.email
-      || !/^\d{6}$/.test(currentCode) || !/^\d{6}$/.test(newCode)) {
-    return reply.code(400).send({ error: 'email verification failed' })
-  }
-  if (getUserByEmail(newEmail)) return reply.code(409).send({ error: 'that email is already in use' })
-
-  let completed
-  try {
-    completed = completeEmailChange({
-      userId: user.id, currentEmail: user.email, newEmail, currentCode, newCode,
-    })
-  } catch (error) {
-    if (String(error?.message ?? error).includes('UNIQUE constraint')
-        || String(error?.message ?? error).includes('email-change-state-conflict')) {
-      return reply.code(409).send({ error: 'email address changed or is already in use; request new codes' })
-    }
-    throw error
-  }
-  if (!completed.ok) return reply.code(400).send({ error: 'email verification failed' })
-
-  clearRateLimit(RATE_POLICIES.otpVerifyAccount, subject)
-  clearRateLimit(RATE_POLICIES.otpRequestAccount, subject)
-  closeUserSockets(user.id)
-  setSessionCookie(reply, completed.result.token)
-  const fresh = getUserById(user.id)
-  return {
-    name: fresh.name, email: fresh.email, username: fresh.username,
-    hasPassword: Boolean(fresh.password_hash), csrfToken: completed.result.csrfToken,
   }
 })
 
@@ -558,28 +381,20 @@ fastify.post('/api/instance/stop', async (req, reply) => {
 fastify.get('/api/admin/settings', async (req, reply) => {
   if (!requireAdmin(req, reply)) return
   return {
-    emailDomains: getEmailDomains().join(', '),
     inviteCode: getInviteCode(),
-    otpRegistrationEnabled: otpRegistrationEnabled(),
-    passwordLoginEnabled: passwordLoginEnabled(),
+    registrationEnabled: registrationEnabled(),
   }
 })
 
 fastify.post('/api/admin/settings', async (req, reply) => {
   if (!requireAdmin(req, reply)) return
-  const { emailDomains, inviteCode, otpRegistrationEnabled: regEnabled, passwordLoginEnabled: pwEnabled } = req.body ?? {}
-  if (emailDomains !== undefined) {
-    const cleaned = String(emailDomains).split(/[,;\s]+/).map((s) => s.trim().toLowerCase()).filter((s) => s.includes('.') && !s.includes('@') && !s.startsWith('.'))
-    setSetting('email_domains', cleaned.join(','))
-  }
+  const { inviteCode, registrationEnabled: regEnabled } = req.body ?? {}
+  if (regEnabled !== undefined && typeof regEnabled !== 'boolean') return reply.code(400).send({ error: 'registrationEnabled must be boolean' })
   if (inviteCode !== undefined) setInviteCode(inviteCode)
-  if (regEnabled !== undefined) setSetting('otp_registration_enabled', regEnabled ? 'true' : 'false')
-  if (pwEnabled !== undefined) setSetting('password_login_enabled', pwEnabled ? 'true' : 'false')
+  if (regEnabled !== undefined) setSetting('registration_enabled', regEnabled ? 'true' : 'false')
   return {
-    emailDomains: getEmailDomains().join(', '),
     inviteCode: getInviteCode(),
-    otpRegistrationEnabled: otpRegistrationEnabled(),
-    passwordLoginEnabled: passwordLoginEnabled(),
+    registrationEnabled: registrationEnabled(),
   }
 })
 
@@ -596,8 +411,8 @@ fastify.post('/api/admin/users/:id/reset-password', async (req, reply) => {
   const user = getUserById(Number(req.params.id))
   if (!user) return reply.code(404).send({ error: 'not found' })
   const { password } = req.body ?? {}
-  if (typeof password !== 'string' || password.length < 8) {
-    return reply.code(400).send({ error: 'password must be at least 8 characters' })
+  if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password) > 72) {
+    return reply.code(400).send({ error: 'password: at least 8 characters, at most 72 bytes' })
   }
   setUserPassword(user.id, hashPassword(password))
   deleteAllSessionsForUser(user.id)
@@ -707,8 +522,7 @@ fastify.get('/api/admin/stats', async (req, reply) => {
 fastify.get('/api/config', async () => ({
   domain: config.domain,
   instanceDomain: config.instanceDomain,
-  otpRegistrationEnabled: otpRegistrationEnabled(),
-  passwordLoginEnabled: passwordLoginEnabled(),
+  registrationEnabled: registrationEnabled(),
   inviteCodeRequired: getInviteCode() !== '',
 }))
 
@@ -716,7 +530,7 @@ fastify.get('/api/config', async () => ({
 
 async function withLiveState(inst) {
   const live = await containerRunning(inst.container_name)
-  return { ...inst, live }
+  return { ...inst, live, url: instanceUrl(inst) }
 }
 
 async function waitUntilRunning(inst) {
@@ -728,6 +542,7 @@ async function waitUntilRunning(inst) {
     }
     await new Promise((r) => setTimeout(r, 2000))
   }
+  throw new Error('instance health check timed out')
 }
 
 // Stop running instances that have received no proxied requests within the
@@ -758,7 +573,6 @@ fastify.listen({ port: config.port, host: config.host }, (err) => {
   console.log(`[portal] listening on http://${config.host}:${config.port}`)
   console.log(`[portal] apex domain: ${config.domain}`)
   console.log(`[portal] cookie domain: ${config.cookieDomain || '(host-only)'}`)
-  console.log(`[portal] otp dev mode: ${config.otpDevMode}`)
   console.log(`[portal] idle stop after ${Math.round(config.idleTimeoutMs / 60000)}m (sweep every ${Math.round(config.idleSweepIntervalMs / 1000)}s)`)
 
   // Periodic idle sweep. Keep the handle so the timer isn't GC'd; unref so it

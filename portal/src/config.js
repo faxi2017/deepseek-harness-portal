@@ -41,7 +41,7 @@ export const config = {
   environment: process.env.NODE_ENV ?? 'production',
 
   // Portal listen address (cloudflared on this host connects here).
-  port: num('PORT', 8080),
+  port: num('PORT', 7000),
   host: process.env.HOST ?? '127.0.0.1',
 
   // Apex/portal domain (login + admin UI). Override in production.
@@ -62,14 +62,15 @@ export const config = {
 
   dataDir: process.env.DATA_DIR ?? join(root, 'data'),
   image: process.env.DSH_IMAGE ?? '',
-  podmanCommandTimeoutMs: num('PODMAN_COMMAND_TIMEOUT_MS', 60 * 1000),
+  dockerCommandTimeoutMs: num('DOCKER_COMMAND_TIMEOUT_MS', 60 * 1000),
+  instanceRouting: process.env.INSTANCE_ROUTING ?? 'ports',
+  instancePortStart: num('INSTANCE_PORT_START', 7001),
 
   // Host loopback port pool for published instance ports.
   portRangeStart: num('PORT_RANGE_START', 18000),
   portRangeEnd: num('PORT_RANGE_END', 18100),
 
   // Seeded admin account (created at first boot if absent).
-  adminEmail: process.env.ADMIN_EMAIL ?? '',
   adminName: process.env.ADMIN_NAME ?? '',
   adminPassword: process.env.ADMIN_PASSWORD ?? '',
 
@@ -78,8 +79,8 @@ export const config = {
   instanceMemory,
   instanceMemorySwap: process.env.INSTANCE_MEMORY_SWAP ?? instanceMemory,
   instancePidsLimit: num('INSTANCE_PIDS_LIMIT', 512),
-  instanceNetwork: process.env.INSTANCE_NETWORK ?? 'pasta',
-  instanceLogSize: process.env.INSTANCE_LOG_SIZE ?? '10mb',
+  instanceNetwork: process.env.INSTANCE_NETWORK ?? 'dsh-portal-tenants',
+  instanceLogSize: process.env.INSTANCE_LOG_SIZE ?? '10m',
   instanceTmpfsSize: process.env.INSTANCE_TMPFS_SIZE ?? '64m',
   instanceReadOnlyRoot: bool('INSTANCE_READ_ONLY_ROOT', true),
 
@@ -108,22 +109,6 @@ export const config = {
 }
 
 export function validateConfig() {
-  const localDomain = new Set(['localhost', '127.0.0.1', '[::1]']).has(config.domain.toLowerCase())
-  const loopbackBind = new Set(['127.0.0.1', '::1', 'localhost']).has(config.host.toLowerCase())
-  if (config.otpDevMode && (config.environment !== 'development' || !localDomain || !loopbackBind)) {
-    throw new Error('OTP_DEV_MODE=true is allowed only with NODE_ENV=development on a loopback-only localhost deployment')
-  }
-  if (!config.otpDevMode) {
-    if (!config.smtp.host || !config.smtp.from) {
-      throw new Error('SMTP_HOST and SMTP_FROM are required unless explicit localhost development OTP mode is enabled')
-    }
-    if (Boolean(config.smtp.user) !== Boolean(config.smtp.pass)) {
-      throw new Error('SMTP_USER and SMTP_PASS must either both be set or both be empty')
-    }
-  }
-  if (!Number.isInteger(config.smtp.port) || config.smtp.port < 1 || config.smtp.port > 65535) {
-    throw new Error('SMTP_PORT must be an integer from 1 to 65535')
-  }
   const positiveMs = [
     ['OTP_TTL_MS', config.otpTtlMs],
     ['SESSION_ABSOLUTE_TTL_MS', config.sessionAbsoluteTtlMs],
@@ -132,7 +117,7 @@ export function validateConfig() {
     ['AUTH_RATE_WINDOW_MS', config.authRateWindowMs],
     ['AUTH_RATE_BLOCK_MS', config.authRateBlockMs],
     ['OTP_RESEND_COOLDOWN_MS', config.otpResendCooldownMs],
-    ['PODMAN_COMMAND_TIMEOUT_MS', config.podmanCommandTimeoutMs],
+    ['DOCKER_COMMAND_TIMEOUT_MS', config.dockerCommandTimeoutMs],
   ]
   for (const [name, value] of positiveMs) {
     if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`)
@@ -159,6 +144,24 @@ export function validateConfig() {
   if (!Number.isInteger(config.instancePidsLimit) || config.instancePidsLimit < 64) {
     throw new Error('INSTANCE_PIDS_LIMIT must be an integer of at least 64')
   }
-  if (config.instanceNetwork !== 'pasta') throw new Error('INSTANCE_NETWORK must be pasta for tenant isolation')
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/.test(config.instanceNetwork) || ['bridge', 'host', 'none'].includes(config.instanceNetwork)) {
+    throw new Error('INSTANCE_NETWORK must name a dedicated Docker bridge network')
+  }
+  if (!['ports', 'subdomains'].includes(config.instanceRouting)) throw new Error('INSTANCE_ROUTING must be ports or subdomains')
+  for (const port of [config.port, config.portRangeStart, config.portRangeEnd, config.instancePortStart]) {
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('ports must be integers from 1024 to 65535')
+  }
+  const slots = config.portRangeEnd - config.portRangeStart + 1
+  if (slots < 1 || slots > 256) throw new Error('instance port range must contain 1-256 ports')
+  if (config.instanceRouting === 'ports') {
+    const last = config.instancePortStart + slots - 1
+    if (last > 65535 || (config.port >= config.instancePortStart && config.port <= last)
+        || (config.instancePortStart <= config.portRangeEnd && last >= config.portRangeStart)) {
+      throw new Error('public instance ports must not overlap Portal or internal container ports')
+    }
+    if (new URL(config.portalOrigin).hostname !== config.domain || config.cookieDomain) {
+      throw new Error('port routing requires matching DOMAIN/PORTAL_ORIGIN and an empty COOKIE_DOMAIN')
+    }
+  }
   if (!Number.isInteger(config.otpMaxAttempts) || config.otpMaxAttempts < 1) throw new Error('OTP_MAX_ATTEMPTS must be a positive integer')
 }

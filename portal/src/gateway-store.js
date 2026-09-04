@@ -24,6 +24,7 @@ db.exec(`
     state TEXT NOT NULL DEFAULT 'pending'
   );
   CREATE INDEX IF NOT EXISTS gateway_usage_idx ON gateway_requests(user_id, day);
+  CREATE INDEX IF NOT EXISTS gateway_usage_day_idx ON gateway_requests(day, user_id, model_id);
 `)
 
 let encryptionKey

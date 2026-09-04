@@ -5,6 +5,7 @@ import { allModels, encrypt, getModel, publicModel, publicPolicy, savePolicy, sa
   rotateToken, gatewayEnabled, gatewayDay } from './gateway-store.js'
 import { syncModel, bifrost } from './bifrost.js'
 import { syncDsh } from './gateway-dsh.js'
+import { gatewayAnalytics, gatewayAnalyticsForUser } from './gateway-analytics.js'
 
 export function normalizeBaseUrl(value) {
   const url = new URL(value)
@@ -101,6 +102,29 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
       FROM gateway_requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN gateway_models m ON m.id=r.model_id
       WHERE r.day>=? AND r.day<=? GROUP BY r.user_id,r.model_id,r.day ORDER BY r.day DESC,r.user_id`).all(from, to) }
   }))
+  app.get('/api/admin/gateway/analytics', guarded(async (req) => {
+    try { return gatewayAnalytics(req.query) }
+    catch (error) {
+      if (/^(请选择|用户筛选|模型筛选)/.test(error.message)) invalid(error.message)
+      throw error
+    }
+  }))
+  app.get('/api/gateway/analytics', async (req, reply) => {
+    const user = requireUser(req, reply)
+    if (!user) return
+    if (req.query.userId !== undefined) return reply.code(400).send({ error: '我的用量不支持用户筛选。' })
+    try {
+      const analytics = gatewayAnalyticsForUser(user.id, req.query)
+      const policy = publicPolicy(user.id)
+      const models = new Map(analytics.options.models.map((model) => [model.id, model]))
+      for (const model of allModels()) if (policy.models.includes(model.id)) models.set(model.id, { id: model.id, name: model.name })
+      return { ...analytics, options: { models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)) } }
+    }
+    catch (error) {
+      if (/^(请选择|模型筛选)/.test(error.message)) return reply.code(400).send({ error: error.message })
+      throw error
+    }
+  })
   app.get('/api/gateway/me', async (req, reply) => {
     const user = requireUser(req, reply)
     if (!user) return

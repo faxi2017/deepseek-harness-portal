@@ -226,3 +226,70 @@ test('invalid statistics dates and unsafe model base URLs are rejected without e
   assert.equal(normalizeBaseUrl('http://example.com/v1/chat/completions'), 'http://example.com/v1')
   for (const url of ['file:///tmp/data', 'http://name:password@example.com', 'http://example.com/?key=secret']) assert.throws(() => normalizeBaseUrl(url))
 })
+
+test('analytics returns one filtered snapshot with zero-filled trends, comparisons and dimensions', async () => {
+  db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
+    VALUES('m-other','Other','http://other/v1','other-upstream',?,100,?)`).run(store.encrypt('other-key'), Date.now())
+  const add = (id, user, modelId, day, startedAt, input, output, charged, reserved, state) => db.prepare(`INSERT INTO gateway_requests
+    (id,user_id,model_id,day,started_at,finished_at,reserved,input_tokens,output_tokens,charged_tokens,state)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, user, modelId, day, startedAt, startedAt + 1000, reserved, input, output, charged, state)
+  add('prev', uid, model.id, '2026-08-30', Date.parse('2026-08-30T01:00:00Z'), 10, 5, 15, 100, 'completed')
+  add('d1', uid, model.id, '2026-08-31', Date.parse('2026-08-31T01:30:00Z'), 100, 20, 120, 500, 'completed')
+  add('d2', uid, model.id, '2026-09-01', Date.parse('2026-09-01T02:00:00Z'), 80, 40, 120, 500, 'completed')
+  add('d3', other, 'm-other', '2026-09-01', Date.parse('2026-09-01T15:00:00Z'), 50, 10, 120, 200, 'uncertain')
+  add('d4', other, 'm-other', '2026-09-02', Date.parse('2026-09-02T04:00:00Z'), 0, 0, 0, 100, 'failed')
+  add('d5', other, 'm-other', '2026-09-02', Date.parse('2026-09-02T05:00:00Z'), 0, 0, 0, 900, 'pending')
+  const response = await admin.inject({ url: '/api/admin/gateway/analytics?from=2026-08-31&to=2026-09-02&grain=day', headers: { authorization: 'admin' } })
+  assert.equal(response.statusCode, 200)
+  const data = response.json()
+  assert.deepEqual(data.trend.map((r) => r.period), ['2026-08-31', '2026-09-01', '2026-09-02'])
+  assert.equal(data.summary.actualTokens, 300)
+  assert.equal(data.summary.chargedTokens, 360)
+  assert.equal(data.summary.uncertainTokens, 120)
+  assert.equal(data.summary.reservedTokens, 900)
+  assert.equal(data.summary.requests, 5)
+  assert.equal(data.summary.activeUsers, 2)
+  assert.equal(data.previous.actualTokens, 15)
+  assert.deepEqual(data.users.map((u) => u.name).sort(), ['alice', 'bob'])
+  assert.deepEqual(data.models.map((m) => m.name).sort(), ['Other', 'Test'])
+  assert.equal(data.heatmap.find((r) => r.weekday === 0 && r.hour === 9).actualTokens, 120)
+  assert.ok(!response.body.includes('other-key') && !response.body.includes('SECRET'))
+  const filtered = await admin.inject({ url: `/api/admin/gateway/analytics?from=2026-08-31&to=2026-09-02&userId=${uid}&modelId=m-test&grain=week`, headers: { authorization: 'admin' } })
+  assert.equal(filtered.json().summary.actualTokens, 240)
+  assert.deepEqual(filtered.json().trend.map((r) => r.period), ['2026-08-31'])
+})
+
+test('analytics rejects invalid filters and large hourly ranges through the admin guard', async () => {
+  for (const query of ['from=2026-02-30&to=2026-03-01', 'from=2026-01-01&to=2027-01-02',
+    'from=2026-01-01&to=2026-02-01&grain=hour', 'from=2026-01-01&to=2026-01-02&grain=minute',
+    'from=2026-01-01&to=2026-01-02&userId=-1', 'from=2026-01-01&to=2026-01-02&modelId=bad%2Fmodel']) {
+    const response = await admin.inject({ url: `/api/admin/gateway/analytics?${query}`, headers: { authorization: 'admin' } })
+    assert.equal(response.statusCode, 400)
+  }
+  assert.equal((await admin.inject({ url: '/api/admin/gateway/analytics?from=2026-01-01&to=2026-01-02' })).statusCode, 403)
+})
+
+test('my analytics is limited to the signed-in user and omits identity fields', async () => {
+  db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
+    VALUES('m-other','Other','http://other/v1','other-upstream',?,100,?)`).run(store.encrypt('other-key'), Date.now())
+  const add = (id, user, modelId, input, output) => db.prepare(`INSERT INTO gateway_requests
+    (id,user_id,model_id,day,started_at,finished_at,reserved,input_tokens,output_tokens,charged_tokens,state)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, user, modelId, '2026-09-02', Date.parse('2026-09-02T02:00:00Z'), Date.parse('2026-09-02T02:00:01Z'), 100, input, output, input + output, 'completed')
+  add('mine', uid, model.id, 80, 20)
+  add('other-user', other, 'm-other', 900, 100)
+
+  const response = await admin.inject({ url: '/api/gateway/analytics?from=2026-09-02&to=2026-09-02&grain=day', headers: { 'test-user': String(uid) } })
+  assert.equal(response.statusCode, 200)
+  const data = response.json()
+  assert.equal(data.summary.actualTokens, 100)
+  assert.equal(data.summary.requests, 1)
+  assert.equal(data.users, undefined)
+  assert.deepEqual(data.options.models.map(({ id, name }) => ({ id, name })), [{ id: 'm-test', name: 'Test' }])
+  assert.ok(!response.body.includes('http://upstream') && !response.body.includes('test-upstream'))
+  assert.deepEqual(data.rows[0].userId, undefined)
+  assert.deepEqual(data.rows[0].username, undefined)
+  assert.ok(!response.body.includes('bob') && !response.body.includes('Other') && !response.body.includes('other-key'))
+
+  const blocked = await admin.inject({ url: `/api/gateway/analytics?from=2026-09-02&to=2026-09-02&userId=${other}`, headers: { 'test-user': String(uid) } })
+  assert.equal(blocked.statusCode, 400)
+})

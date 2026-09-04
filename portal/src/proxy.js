@@ -31,8 +31,13 @@ const STRIPPED_REQUEST_HEADERS = [
   'x-forwarded-user', 'x-forwarded-email',
 ]
 
-function hardenProxyRequest(proxyReq) {
+function hardenProxyRequest(proxyReq, req) {
+  const hasValidatedOrigin = req.headers.origin !== undefined
   for (const name of STRIPPED_REQUEST_HEADERS) proxyReq.removeHeader(name)
+  // The outer request has already passed the exact tenant Origin check. DSH
+  // sees the proxy target as its Host, so give same-origin-protected plugins a
+  // matching internal Origin without forwarding the browser-visible origin.
+  if (hasValidatedOrigin) proxyReq.setHeader('origin', `http://${proxyReq.getHeader('host')}`)
 }
 
 function stripUpstreamCookies(headers) {
@@ -42,8 +47,8 @@ function stripUpstreamCookies(headers) {
 }
 
 proxy.on('proxyReq', hardenProxyRequest)
-proxy.on('proxyReqWs', (proxyReq) => {
-  hardenProxyRequest(proxyReq)
+proxy.on('proxyReqWs', (proxyReq, req) => {
+  hardenProxyRequest(proxyReq, req)
   // http-proxy writes both successful 101 and rejected/non-upgrade handshake
   // headers after these listeners. Registering here removes Set-Cookie before
   // either response path reaches the browser.

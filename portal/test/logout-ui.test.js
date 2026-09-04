@@ -15,19 +15,25 @@ async function setup(logoutResponse) {
     querySelector() { return this.button ??= makeElement() },
   })
   const forms = [makeElement(), makeElement()]
+  const themeSelects = [makeElement(), makeElement()]
+  const themeRoot = { dataset: {} }
+  const stored = new Map()
   const requests = []
   const navigations = []
   const context = {
     document: {
+      documentElement: themeRoot,
       querySelector(selector) {
         if (!elements.has(selector)) elements.set(selector, makeElement())
         return elements.get(selector)
       },
-      querySelectorAll: (selector) => selector === '.logout-form' ? forms : [],
+      querySelectorAll: (selector) => selector === '.logout-form' ? forms : selector === '[data-theme-select]' ? themeSelects : [],
       addEventListener() {}, createElement: makeElement,
     },
     setInterval() {}, setTimeout() {},
     window: { location: { replace: (url) => navigations.push(url) } },
+    localStorage: { getItem: (key) => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
+    matchMedia: () => ({ matches: true, addEventListener() {} }),
     fetch: async (url, options) => {
       if (url === '/api/config') return { ok: true, json: async () => ({}) }
       if (url === '/api/auth/me') return { ok: false, json: async () => ({ error: 'not authenticated' }) }
@@ -38,8 +44,22 @@ async function setup(logoutResponse) {
   runInNewContext(source, context)
   await new Promise((resolve) => setImmediate(resolve))
   runInContext("csrfToken = 'test-csrf'", context)
-  return { forms, requests, navigations, elements }
+  return { forms, requests, navigations, elements, stored, themeRoot, themeSelects }
 }
+
+test('theme picker follows the system by default and synchronizes manual choices', async () => {
+  const { stored, themeRoot, themeSelects } = await setup(async () => ({ ok: true, json: async () => ({}) }))
+  assert.equal(themeRoot.dataset.systemTheme, 'dark')
+  assert.equal(themeSelects[0].value, 'system')
+  assert.equal(themeSelects[1].value, 'system')
+
+  themeSelects[0].value = 'light'
+  themeSelects[0].listeners.change()
+  assert.equal(themeRoot.dataset.theme, 'light')
+  assert.equal(themeRoot.dataset.systemTheme, undefined)
+  assert.equal(themeSelects[1].value, 'light')
+  assert.equal(stored.get('dsh-portal-theme'), 'light')
+})
 
 test('both logout forms prevent native navigation and POST before returning home', async () => {
   const { forms, requests, navigations } = await setup(async () => ({

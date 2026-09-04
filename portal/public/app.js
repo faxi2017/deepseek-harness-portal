@@ -9,6 +9,46 @@ let instancesCache = []
 let usersCache = []
 let cfg = { domain: '', instanceDomain: '', registrationEnabled: true, inviteCodeRequired: false }
 
+const THEME_STORAGE_KEY = 'dsh-portal-theme'
+const themeRoot = document.documentElement
+
+function savedTheme() {
+  try {
+    const value = globalThis.localStorage?.getItem(THEME_STORAGE_KEY)
+    return ['light', 'dark', 'system'].includes(value) ? value : 'system'
+  } catch { return 'system' }
+}
+
+function systemTheme() {
+  return globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function applyTheme(preference) {
+  const theme = ['light', 'dark', 'system'].includes(preference) ? preference : 'system'
+  if (themeRoot?.dataset) {
+    if (theme === 'system') {
+      delete themeRoot.dataset.theme
+      themeRoot.dataset.systemTheme = systemTheme()
+    } else {
+      themeRoot.dataset.theme = theme
+      delete themeRoot.dataset.systemTheme
+    }
+  }
+  $$('[data-theme-select]').forEach((select) => { select.value = theme })
+}
+
+function initThemePicker() {
+  applyTheme(savedTheme())
+  $$('[data-theme-select]').forEach((select) => select.addEventListener('change', () => {
+    const preference = select.value
+    try { globalThis.localStorage?.setItem(THEME_STORAGE_KEY, preference) } catch { /* theme still applies for this visit */ }
+    applyTheme(preference)
+  }))
+  globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+    if (savedTheme() === 'system') applyTheme('system')
+  })
+}
+
 // ---- inline icons (feather-style) ----
 const ICONS = {
   server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>',
@@ -191,6 +231,21 @@ function fmtNum(n) {
 }
 function instanceUrl(instance) { return instance.url }
 
+function pluginInventoryHtml(data, admin = false) {
+  const note = data.scanError
+    ? `<p class="form-msg err">${escapeHtml(data.scanError)}</p>`
+    : `<p class="hint">清单更新时间：${data.updatedAt ? new Date(data.updatedAt).toLocaleString('zh-CN') : '尚未读取'}</p>`
+  const rows = data.plugins.map((plugin) => `<tr>
+    <td class="cell-mono">${escapeHtml(plugin.name)}</td>
+    <td>${escapeHtml(plugin.version || '未知')}</td>
+    <td>${plugin.enabled ? '已启用' : '未启用'}</td>
+    <td>${plugin.protected ? '平台默认插件' : `<button class="btn btn-danger btn-sm" data-uninstall-plugin="${escapeHtml(plugin.name)}">卸载并重启</button>`}</td>
+  </tr>`).join('')
+  return `${note}<div class="cell-actions"><button class="btn btn-ghost btn-sm" data-refresh-plugins>重新读取插件清单</button></div>
+    ${rows ? `<div class="table-wrap"><table><thead><tr><th>插件</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="empty">${data.updatedAt ? '没有检测到第三方插件。' : '尚无插件记录，请点击“重新读取插件清单”。'}</p>`}
+    <p class="hint">卸载会短暂停止并重新启动${admin ? '该用户的' : '你的'}实例；工作文件、会话和模型配置不会删除。平台默认插件需由管理员统一维护。</p>`
+}
+
 // ---- views ----
 function showApp() { $('#auth-view').classList.add('hidden'); $('#app-view').classList.remove('hidden') }
 function showAuth() { $('#app-view').classList.add('hidden'); $('#auth-view').classList.remove('hidden') }
@@ -201,12 +256,28 @@ function setAdminTab(tab) {
   $('#panel-users').classList.toggle('hidden', tab !== 'users')
   $('#panel-settings').classList.toggle('hidden', tab !== 'settings')
   $('#panel-gateway').classList.toggle('hidden', tab !== 'gateway')
-  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关' }
+  $('#panel-plugins').classList.toggle('hidden', tab !== 'plugins')
+  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', plugins: '默认插件' }
   $('#topbar-title').textContent = titles[tab] || '概览'
   if (tab === 'instances') renderInstances()
   else if (tab === 'users') renderUsers()
   else if (tab === 'settings') renderSettings()
   else if (tab === 'gateway') renderGateway()
+  else if (tab === 'plugins') renderPlugins(true)
+}
+
+function setUserTab(tab) {
+  const gateway = tab === 'gateway'
+  $$('#user-nav [data-user-tab], #mobile-user-nav [data-user-tab]').forEach((button) => {
+    const active = button.dataset.userTab === tab
+    button.classList.toggle('active', active)
+    if (active) button.setAttribute('aria-current', 'page')
+    else button.removeAttribute('aria-current')
+  })
+  $('#user-workspace-view').classList.toggle('hidden', gateway)
+  $('#user-gateway-view').classList.toggle('hidden', !gateway)
+  $('#topbar-title').textContent = gateway ? '模型网关' : '我的工作空间'
+  if (gateway) renderMyGatewayUsage()
 }
 
 // ---- auth ----
@@ -327,6 +398,7 @@ async function renderUser() {
     $('#i-error').textContent = instance.error ? errorMessage(instance.error) : ''
     $('#i-error').style.display = instance.error ? '' : 'none'
     renderMyGateway()
+    if (!$('#my-plugins').dataset.loaded) renderMyPlugins()
   } catch (err) {
     $('#instance-empty').textContent = err.message
   }
@@ -335,6 +407,36 @@ async function renderUser() {
 $('#i-copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('#i-url').textContent); toast('地址已复制', 'ok') }
   catch { toast('复制失败，请手动复制', 'err') }
+})
+
+async function renderMyPlugins(refresh = false) {
+  const root = $('#my-plugins')
+  root.dataset.loaded = 'true'
+  root.innerHTML = '<h3>我的插件</h3><p><span class="spinner"></span> 正在读取…</p>'
+  try {
+    const data = await api(`/api/profile/plugins${refresh ? '?refresh=1' : ''}`)
+    root.innerHTML = `<h3>我的插件</h3>${pluginInventoryHtml(data)}`
+    root.querySelector('[data-refresh-plugins]').addEventListener('click', (e) => withButtonLoading(e.currentTarget, '正在读取…', () => renderMyPlugins(true)))
+    root.querySelectorAll('[data-uninstall-plugin]').forEach((button) => button.addEventListener('click', async () => {
+      const packageName = button.dataset.uninstallPlugin
+      const ok = await confirmModal('卸载插件并重启', `确定卸载 ${packageName} 吗？实例会短暂停止并重新启动。`, '确认卸载')
+      if (!ok) return
+      try {
+        await withButtonLoading(button, '正在卸载…', () => api('/api/profile/plugins/uninstall', { method: 'POST', body: { packageName } }))
+        toast('插件已卸载，实例已尝试恢复', 'ok'); await renderMyPlugins(true); renderUser()
+      } catch (err) { toast(err.message, 'err') }
+    }))
+  } catch (err) { root.innerHTML = `<h3>我的插件</h3><p class="form-msg err">${escapeHtml(err.message)}</p>` }
+}
+
+$('#i-restart').addEventListener('click', async (e) => {
+  const ok = await confirmModal('重启服务', '将停止并重新启动当前容器。文件、插件和配置会保留，当前连接会短暂中断。', '确认重启', false)
+  if (!ok) return
+  try {
+    await withButtonLoading(e.currentTarget, '正在重启…', () => api('/api/instance/restart', { method: 'POST' }))
+    toast('服务已重启', 'ok')
+    renderUser()
+  } catch (err) { toast(err.message, 'err') }
 })
 
 // ---- admin ----
@@ -380,7 +482,9 @@ function drawInstances() {
         <td><div class="cell-actions">
           <a class="btn btn-ghost btn-sm" href="${url}" target="_blank" rel="noopener">${icon('external', 14)} 进入</a>
           <button class="btn btn-ghost btn-sm" data-act="logs" data-id="${i.id}">${icon('terminal', 14)} 日志</button>
-          <button class="btn btn-ghost btn-sm" data-act="reprovision" data-id="${i.id}">${icon('refresh', 14)} 重建</button>
+          <button class="btn btn-ghost btn-sm" data-act="plugins" data-id="${i.id}">${icon('sliders', 14)} 插件</button>
+          <button class="btn btn-ghost btn-sm" data-act="restart" data-id="${i.id}">${icon('refresh', 14)} 重启服务</button>
+          <button class="btn btn-ghost btn-sm" data-act="reprovision" data-id="${i.id}" title="删除旧容器并按当前镜像新建；用户数据卷会保留。">${icon('refresh', 14)} 重建容器</button>
           <button class="btn btn-danger btn-sm" data-act="delete" data-id="${i.id}">${icon('trash', 14)} 删除</button>
         </div></td>
       </tr>`
@@ -463,19 +567,56 @@ $('#instances-table').addEventListener('click', async (e) => {
       $('#modal-root .modal-body').innerHTML = `<pre class="log-view">${escapeHtml(logs || '（暂无日志）')}</pre>`
       return
     }
+    if (act === 'plugins') {
+      const instance = instancesCache.find((row) => String(row.id) === id)
+      openPluginRecovery(instance)
+      return
+    }
     if (act === 'delete') {
       const ok = await confirmModal('删除实例', '确定删除此实例及其全部数据吗？此操作无法撤销。')
       if (!ok) return
     }
     if (act === 'reprovision') {
-      const ok = await confirmModal('重建实例', '确定使用当前配置的版本重建实例吗？用户文件、插件及配置将保留。', '确认重建', false)
+      const ok = await confirmModal('重建容器', '将删除旧容器并按当前镜像和平台配置新建。用户文件、插件及配置会保留；若只需让插件生效，请使用“重启服务”。', '确认重建', false)
       if (!ok) return
     }
-    await api(`/api/admin/instances/${id}/${act}`, { method: 'POST' })
-    toast(act === 'delete' ? '实例已删除' : '实例正在重建', 'ok')
+    if (act === 'restart') {
+      const ok = await confirmModal('重启服务', '将停止并重新启动当前容器。文件、插件和配置会保留，当前连接会短暂中断。', '确认重启', false)
+      if (!ok) return
+      await withButtonLoading(btn, '正在重启…', () => api(`/api/admin/instances/${id}/restart`, { method: 'POST' }))
+      toast('服务已重启', 'ok')
+    } else {
+      await api(`/api/admin/instances/${id}/${act}`, { method: 'POST' })
+      toast(act === 'delete' ? '实例已删除' : '实例正在重建', 'ok')
+    }
     renderStats(); renderInstances()
   } catch (err) { toast(err.message, 'err') }
 })
+
+async function openPluginRecovery(instance) {
+  if (!instance) return
+  openModal({ title: `插件管理：${instance.username || instance.slug}`, body: '<div id="admin-plugin-inventory"><p><span class="spinner"></span> 正在读取…</p></div>', wide: true })
+  const render = async (refresh = false) => {
+    const root = $('#admin-plugin-inventory')
+    try {
+      const data = await api(`/api/admin/plugins/inventory?instanceId=${instance.id}${refresh ? '&refresh=1' : ''}`)
+      root.innerHTML = pluginInventoryHtml(data, true)
+      root.querySelector('[data-refresh-plugins]').addEventListener('click', (e) => withButtonLoading(e.currentTarget, '正在读取…', () => render(true)))
+      root.querySelectorAll('[data-uninstall-plugin]').forEach((button) => button.addEventListener('click', async () => {
+        const packageName = button.dataset.uninstallPlugin
+        const ok = await confirmModal('代用户卸载插件', `确定从 ${instance.username || instance.slug} 的实例卸载 ${packageName} 吗？实例会重新启动。`, '确认卸载')
+        if (!ok) return
+        try {
+          await api('/api/admin/plugins/uninstall', { method: 'POST', body: { instanceId: instance.id, packageName } })
+          toast('插件已卸载，实例已尝试恢复', 'ok')
+          openPluginRecovery(instance)
+          renderInstances()
+        } catch (err) { toast(err.message, 'err'); openPluginRecovery(instance) }
+      }))
+    } catch (err) { root.innerHTML = `<p class="form-msg err">${escapeHtml(err.message)}</p>` }
+  }
+  await render(true)
+}
 
 $('#users-table').addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]')
@@ -511,11 +652,45 @@ $('#search-users').addEventListener('input', drawUsers)
 
 // ---- nav ----
 $$('#admin-nav .nav-item, #mobile-admin-nav .nav-item').forEach((n) => n.addEventListener('click', () => setAdminTab(n.dataset.tab)))
+$$('#user-nav [data-user-tab], #mobile-user-nav [data-user-tab]').forEach((button) => button.addEventListener('click', () => setUserTab(button.dataset.userTab)))
 $('#profile-btn').addEventListener('click', openProfile)
 $('#mobile-profile-btn').addEventListener('click', openProfile)
 $('#refresh-btn').addEventListener('click', () => {
+  if (me?.role === 'admin' && !$('#panel-plugins').classList.contains('hidden')) { renderPlugins(); return }
   if (me?.role === 'admin' && !$('#panel-gateway').classList.contains('hidden')) { renderGateway(); return }
+  if (me?.role !== 'admin' && !$('#user-gateway-view').classList.contains('hidden')) { renderMyGatewayUsage(); return }
   boot()
+})
+
+// ---- default plugins ----
+async function renderPlugins(loadForm = false) {
+  try {
+    const data = await api('/api/admin/plugins')
+    if (loadForm) $('#plugin-commands').value = data.commands
+    $('#plugins-status').textContent = data.busy ? '正在逐个处理实例，可离开此页面，稍后回来查看结果。' : '新用户自动安装保存的默认插件；已有用户可批量安装或单独重试。'
+    $('#plugins-save').disabled = data.busy
+    $('#plugins-apply').disabled = data.busy || !data.commands
+    const states = { queued: '等待安装', running: '正在安装', completed: '安装成功', failed: '安装失败' }
+    $('#plugins-instances').innerHTML = data.instances.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>安装状态</th><th>已安装版本</th><th>说明</th><th>操作</th></tr></thead><tbody>${data.instances.map((i) => `<tr><td>${escapeHtml(i.username)}</td><td>${states[i.plugin?.state] ?? '尚未下发'}${i.plugin && i.plugin.revision !== data.revision ? ' · 默认配置已更新' : ''}</td><td>${escapeHtml(i.plugin ? JSON.parse(i.plugin.installed).map((p) => `${p.name}@${p.version}`).join('、') : '—')}</td><td>${escapeHtml(i.plugin?.message ?? '')}</td><td><button class="btn btn-ghost btn-sm" data-plugin-instance="${i.id}" ${['queued', 'running'].includes(i.plugin?.state) || !data.commands || i.status === 'deleting' ? 'disabled' : ''}>安装 / 重试</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">暂无子用户实例。</p>'
+  } catch (err) { $('#plugins-status').textContent = err.message }
+}
+$('#plugins-form').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  try {
+    await withButtonLoading($('#plugins-save'), '正在保存…', () => api('/api/admin/plugins', { method: 'POST', body: { commands: $('#plugin-commands').value } }))
+    toast('默认插件已保存；已有实例请点击批量安装', 'ok'); renderPlugins(true)
+  } catch (err) { toast(err.message, 'err') }
+})
+async function applyPlugins(instanceId) {
+  try {
+    await api('/api/admin/plugins/apply', { method: 'POST', body: instanceId ? { instanceId: Number(instanceId) } : {} })
+    toast('安装任务已提交，成功后自动重启', 'ok'); renderPlugins()
+  } catch (err) { toast(err.message, 'err') }
+}
+$('#plugins-apply').addEventListener('click', () => applyPlugins())
+$('#plugins-instances').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-plugin-instance]')
+  if (button) applyPlugins(button.dataset.pluginInstance)
 })
 
 // ---- model gateway ----
@@ -541,13 +716,6 @@ async function renderGateway() {
     if (!form.elements.to.value) form.elements.to.value = data.day
     await renderGatewayUsage()
   } catch (err) { $('#gateway-status').textContent = err.message }
-}
-async function renderGatewayUsage() {
-  try {
-    const form = $('#gateway-usage-filter')
-    const data = await api(`/api/admin/gateway/usage?from=${encodeURIComponent(form.elements.from.value)}&to=${encodeURIComponent(form.elements.to.value)}`)
-    $('#gateway-usage').innerHTML = data.rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>用户 / 模型</th><th>输入 Token</th><th>输出 Token</th><th>扣减 / 预留</th><th>调用 / 异常</th></tr></thead><tbody>${data.rows.map((r) => `<tr><td>${escapeHtml(r.day)}</td><td>${escapeHtml(r.username ?? '已删除用户')}<div class="hint">${escapeHtml(r.modelName ?? r.modelId)}</div></td><td>${exactTokens(r.inputTokens)}</td><td>${exactTokens(r.outputTokens)}</td><td>${exactTokens(r.chargedTokens)} / ${exactTokens(r.reservedTokens)}</td><td>${r.requests}<div class="hint">失败 ${r.failedRequests} · 待核实 ${r.uncertainRequests}</div></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">所选日期暂无模型调用。</p>'
-  } catch (err) { $('#gateway-usage').textContent = err.message }
 }
 function editGatewayModel(id) {
   const m = gatewayCache?.models.find((row) => row.id === id)
@@ -605,11 +773,12 @@ function editGatewayPolicy(id) {
 async function renderMyGateway() {
   try {
     const p = await api('/api/gateway/me')
-    $('#my-gateway').innerHTML = `<h3>我的平台模型</h3><p>${!p.gatewayEnabled ? '平台模型服务未启用。' : !p.enabled ? '管理员尚未分配平台模型。' : `${p.models.map((m) => escapeHtml(m.name)).join('、')} · 今日已用 ${exactTokens(p.chargedTokens)} / ${exactTokens(p.dailyTokens)} Token · 预留 ${exactTokens(p.reservedTokens)}`}</p>${p.enabled && p.gatewayEnabled ? '<button class="btn btn-ghost btn-sm" id="my-gateway-sync">更新平台模型配置</button>' : ''}<p class="hint">${escapeHtml(p.syncError || '个人模型用量不计入平台额度。')}</p>`
+    $('#my-gateway').innerHTML = `<h3>我的平台模型</h3><p>${!p.gatewayEnabled ? '平台模型服务未启用。' : !p.enabled ? '管理员尚未分配平台模型。' : `${p.models.map((m) => escapeHtml(m.name)).join('、')} · 今日已用 ${exactTokens(p.chargedTokens)} / ${exactTokens(p.dailyTokens)} Token · 预留 ${exactTokens(p.reservedTokens)}`}</p><div class="cell-actions">${p.enabled && p.gatewayEnabled ? '<button class="btn btn-ghost btn-sm" id="my-gateway-sync">更新平台模型配置</button>' : ''}<button class="btn btn-ghost btn-sm" id="my-gateway-usage-link">查看我的用量</button></div><p class="hint">${escapeHtml(p.syncError || '个人模型用量不计入平台额度。')}</p>`
     $('#my-gateway-sync')?.addEventListener('click', async (e) => {
       try { await withButtonLoading(e.currentTarget, '正在更新…', () => api('/api/gateway/me/sync', { method: 'POST' })); toast('平台模型已更新', 'ok') }
       catch (err) { toast(err.message, 'err') }
     })
+    $('#my-gateway-usage-link')?.addEventListener('click', () => setUserTab('gateway'))
   } catch { $('#my-gateway').textContent = '' }
 }
 $('#gateway-add-model').addEventListener('click', () => editGatewayModel())
@@ -649,13 +818,15 @@ async function boot() {
     showApp()
     $('#admin-nav').classList.toggle('hidden', user.role !== 'admin')
     $('#mobile-admin-nav').classList.toggle('hidden', user.role !== 'admin')
+    $('#user-nav').classList.toggle('hidden', user.role === 'admin')
+    $('#mobile-user-nav').classList.toggle('hidden', user.role === 'admin')
     $('#user-view').classList.toggle('hidden', user.role === 'admin')
     $('#admin-view').classList.toggle('hidden', user.role !== 'admin')
     if (user.role === 'admin') {
       setAdminTab('instances')
       renderStats()
     } else {
-      $('#topbar-title').textContent = '我的工作空间'
+      setUserTab('workspace')
       await renderUser()
     }
   } catch {
@@ -669,9 +840,10 @@ async function boot() {
 
 setInterval(async () => {
   if (!me) return
-  if (me.role === 'admin') { renderStats(); if (!$('#panel-instances').classList.contains('hidden')) renderInstances() }
+  if (me.role === 'admin') { renderStats(); if (!$('#panel-instances').classList.contains('hidden')) renderInstances(); if (!$('#panel-plugins').classList.contains('hidden')) renderPlugins() }
   else renderUser()
 }, 6000)
 
 hydrateIcons()
+initThemePicker()
 boot()

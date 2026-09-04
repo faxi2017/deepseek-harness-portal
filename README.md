@@ -17,6 +17,14 @@ notepad .env
 .\run-portal.ps1
 ```
 
+停止 Portal（以及同一进程内的模型网关）：
+
+```powershell
+.\stop-portal.ps1
+```
+
+如需先确认将要停止的进程，可运行 ` .\stop-portal.ps1 -WhatIf`。该命令不会停止服务。Docker 租户容器会保留，可在 Portal 管理页按需停止。
+
 复制配置文件只做一次。编辑 `.env`：填写自己设置的至少 16 位 `ADMIN_PASSWORD`，将构建输出的 `DSH_IMAGE=sha256:...` 填入。浏览器打开 `http://localhost:7000`，管理员用户名默认 `admin`。用户直接填写账号、密码、确认密码注册，无需邮箱和验证码。
 
 完整的首次部署、日常同步、镜像升级、备份和故障排查见 [DEPLOYMENT.md](DEPLOYMENT.md)。项目代码分析、已实现功能与后续计划见 [project_context.md](project_context.md)。

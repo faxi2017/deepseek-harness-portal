@@ -53,7 +53,8 @@ test('real port listeners enforce ownership and origins, strip HTTP/WS credentia
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('set-cookie'), null)
     const forwarded = await response.json()
-    for (const key of ['cookie', 'origin', 'authorization', 'x-csrf-token']) assert.equal(forwarded[key], undefined)
+    assert.equal(forwarded.origin, `http://127.0.0.1:${upstream.address().port}`)
+    for (const key of ['cookie', 'authorization', 'x-csrf-token']) assert.equal(forwarded[key], undefined)
     const handshake = await new Promise((resolve, reject) => {
       const socket = net.connect(27471, '127.0.0.1')
       let result = ''
@@ -66,7 +67,7 @@ test('real port listeners enforce ownership and origins, strip HTTP/WS credentia
     assert.match(handshake, /101 Switching Protocols/)
     assert.doesNotMatch(handshake, /set-cookie/i)
     assert.equal(wsHeaders.cookie, undefined)
-    assert.equal(wsHeaders.origin, undefined)
+    assert.equal(wsHeaders.origin, `http://127.0.0.1:${upstream.address().port}`)
   } finally {
     await app.close()
     upstream.closeAllConnections()

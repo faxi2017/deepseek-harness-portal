@@ -3,6 +3,7 @@ portal/node_modules/
 portal/data/
 backups/
 *.log
+.portal.pid
 .env
 node_modules/
 # Windows ssh.exe writes a literal NUL file under Git Bash for podman machine ssh

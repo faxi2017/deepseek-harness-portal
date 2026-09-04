@@ -20,11 +20,13 @@ import {
 import { RATE_POLICIES, clearRateLimit, clientIp, consumeRateLimit } from './rate-limit.js'
 import {
   allocatePort, containerLogs, containerName, containerRunning, provision,
-  removeContainer, startContainer, stopContainer, verifyDockerRuntime,
+  removeContainer, restartContainer, startContainer, stopContainer, verifyDockerRuntime,
 } from './orchestrator.js'
 import { closeUserSockets, setupProxy } from './proxy.js'
 import { instanceUrl } from './routing.js'
 import { registerGatewayAdmin } from './gateway-admin.js'
+import { registerPluginAdmin } from './plugin-admin.js'
+import { recoverPluginJobs, pluginState } from './plugins.js'
 import { startGateway } from './gateway.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -43,12 +45,14 @@ await fastify.register(fastifyStatic, {
     reply.header('Cache-Control', 'no-store')
   },
 })
+fastify.get('/vendor/echarts.min.js', (_req, reply) => reply.sendFile('echarts.min.js', join(__dirname, '..', 'node_modules', 'echarts', 'dist')))
 
 validateConfig()
 await verifyDockerRuntime()
 purgeExpiredSessions()
 ensureAdmin()
 setupProxy(fastify)
+recoverPluginJobs()
 
 // Re-queue instances left mid-provisioning by a previous process exit.
 for (const inst of listInstancesWithUsers()) {
@@ -378,8 +382,21 @@ fastify.post('/api/instance/stop', async (req, reply) => {
   return { instance: getInstanceByUserId(user.id) }
 })
 
+fastify.post('/api/instance/restart', async (req, reply) => {
+  const user = requireUser(req, reply)
+  if (!user) return
+  const inst = getInstanceByUserId(user.id)
+  if (!inst) return reply.code(404).send({ error: 'no instance' })
+  if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  await restartContainer(inst.container_name)
+  await waitUntilRunning(inst)
+  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+  return { instance: getInstanceByUserId(user.id) }
+})
+
 // ---- admin: settings -------------------------------------------------------
 registerGatewayAdmin(fastify, { requireAdmin, requireUser })
+registerPluginAdmin(fastify, { requireAdmin, requireUser })
 
 fastify.get('/api/admin/settings', async (req, reply) => {
   if (!requireAdmin(req, reply)) return
@@ -473,6 +490,17 @@ fastify.post('/api/admin/instances/:id/stop', async (req, reply) => {
   return { ok: true }
 })
 
+fastify.post('/api/admin/instances/:id/restart', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return
+  const inst = getInstanceById(Number(req.params.id))
+  if (!inst) return reply.code(404).send({ error: 'not found' })
+  if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  await restartContainer(inst.container_name)
+  await waitUntilRunning(inst)
+  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+  return { ok: true }
+})
+
 fastify.post('/api/admin/instances/:id/delete', async (req, reply) => {
   if (!requireAdmin(req, reply)) return
   const inst = getInstanceById(Number(req.params.id))
@@ -554,6 +582,7 @@ function idleSweep() {
   const deadline = Date.now() - config.idleTimeoutMs
   for (const inst of listInstancesWithUsers()) {
     if (inst.status !== 'running') continue
+    if (pluginState(inst.id)?.state === 'running') continue
     const last = inst.last_active ?? inst.created_at
     if (last > deadline) continue
     stopContainer(inst.container_name)

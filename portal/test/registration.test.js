@@ -15,11 +15,16 @@ Object.assign(process.env, { DATA_DIR: dataDir, NODE_ENV: 'production', DOMAIN: 
 let full = false
 let port = 18570
 const provisioned = []
+const restarted = []
+const running = new Set()
 mock.module('../src/orchestrator.js', { namedExports: {
   allocatePort: async () => { await new Promise((r) => setTimeout(r, 5)); if (full) throw new Error('full'); return port++ },
-  containerName: (slug) => `dsh-${slug}`, containerRunning: async () => false, waitHealthy: async () => true,
+  containerName: (slug) => `dsh-${slug}`, containerRunning: async (name) => running.has(name), waitHealthy: async () => true,
   containerLogs: async () => '', provision: async (id) => { provisioned.push(id) },
-  removeContainer: async () => {}, startContainer: async () => {}, stopContainer: async () => {}, verifyDockerRuntime: async () => {},
+  removeContainer: async () => {}, restartContainer: async (name) => { restarted.push(name); running.add(name) },
+  scanInstancePlugins: async () => ({ plugins: [], updatedAt: Date.now() }),
+  startContainer: async () => {}, stopContainer: async () => {}, verifyDockerRuntime: async () => {},
+  uninstallInstancePlugin: async () => ({ plugins: [], updatedAt: Date.now(), recovered: true }),
 } })
 const { fastify } = await import('../src/index.js')
 if (!fastify.server.listening) await once(fastify.server, 'listening')
@@ -93,6 +98,23 @@ test('administrator can recover a password without email and revokes old session
   assert.equal((await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })).status, 200)
 })
 
+test('users can restart only their own instance and administrators can restart any instance', async () => {
+  const userLogin = await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })
+  const userCookie = userLogin.headers.get('set-cookie').split(';')[0]
+  const userSession = await userLogin.json()
+  const adminLogin = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminSession = await adminLogin.json()
+  const instance = db.prepare('SELECT * FROM instances WHERE user_id=?').get(getUserByUsername('alice').id)
+
+  assert.equal((await post('/api/instance/restart', {}, { cookie: userCookie })).status, 403)
+  assert.equal((await post('/api/instance/restart', {}, { cookie: userCookie, 'x-csrf-token': userSession.csrfToken })).status, 200)
+  assert.equal(restarted.at(-1), instance.container_name)
+  assert.equal((await post(`/api/admin/instances/${instance.id}/restart`, {}, { cookie: userCookie, 'x-csrf-token': userSession.csrfToken })).status, 403)
+  assert.equal((await post(`/api/admin/instances/${instance.id}/restart`, {}, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken })).status, 200)
+  assert.equal(restarted.at(-1), instance.container_name)
+})
+
 for (const contentType of ['application/json', 'application/x-www-form-urlencoded']) {
   test(`logout accepts ${contentType}, redirects home and revokes sessions`, async () => {
     const login = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
@@ -139,4 +161,18 @@ test('gateway admin routes retain session, role, origin and CSRF protection; use
   assert.equal(self.userId, id)
   assert.equal(self.dailyTokens, 100)
   assert.equal(self.secret, undefined)
+})
+
+test('plugin management requires an admin session, same origin and CSRF token', async () => {
+  const login = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+  const cookie = login.headers.get('set-cookie').split(';')[0]
+  const { csrfToken } = await login.json()
+  assert.equal((await fetch(origin + '/api/admin/plugins')).status, 401)
+  const body = { commands: 'dsh plugin --profile web add dshmarket' }
+  assert.equal((await post('/api/admin/plugins', body, { cookie })).status, 403)
+  assert.equal((await post('/api/admin/plugins', body, { cookie, 'x-csrf-token': csrfToken, origin: 'http://other.example' })).status, 403)
+  assert.equal((await post('/api/admin/plugins', body, { cookie, 'x-csrf-token': csrfToken })).status, 200)
+  const user = await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })
+  const userCookie = user.headers.get('set-cookie').split(';')[0]
+  assert.equal((await fetch(origin + '/api/admin/plugins', { headers: { cookie: userCookie } })).status, 403)
 })

@@ -19,7 +19,7 @@ mock.module('../src/docker.js', { namedExports: {
       if (removalFailure) throw new Error('volume is in use')
       objects.delete(`volume:${args.at(-1)}`)
     }
-    if (args[0] === 'start' || args[0] === 'stop') {
+    if (args[0] === 'start' || args[0] === 'stop' || args[0] === 'restart') {
       maxActive = Math.max(maxActive, ++active)
       await new Promise((resolve) => setTimeout(resolve, 10))
       active--
@@ -31,7 +31,7 @@ mock.module('../src/docker.js', { namedExports: {
   ensureNetwork: async () => ({}),
   applyFirewall: async () => {},
 } })
-const { createContainer, removeContainerKeepVolumes, removeContainer, startContainer, stopContainer } = await import('../src/orchestrator.js')
+const { createContainer, removeContainerKeepVolumes, removeContainer, restartContainer, startContainer, stopContainer } = await import('../src/orchestrator.js')
 const { db } = await import('../src/db.js')
 
 test('creation uses Docker-compatible logging, limits, loopback publication and private volumes', async () => {
@@ -58,8 +58,10 @@ test('reprovision cleanup retains volumes; destructive deletion propagates a vol
 })
 
 test('lifecycle operations on the same tenant remain serialized', async () => {
-  await Promise.all([startContainer('dsh-alice'), stopContainer('dsh-alice'), startContainer('dsh-alice')])
+  await Promise.all([startContainer('dsh-alice'), restartContainer('dsh-alice'), stopContainer('dsh-alice'), startContainer('dsh-alice')])
   assert.equal(maxActive, 1)
+  const restart = calls.find((args) => args[0] === 'restart')
+  assert.deepEqual(restart, ['restart', '-t', '15', 'dsh-alice'])
 })
 
 test.after(() => {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DeepSeek Harness 管理平台</title>
+  <title>智慧交通 DeepHarness AI 助手</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -15,62 +15,93 @@
 
   <!-- ===================== AUTH ===================== -->
   <div id="auth-view" class="auth-wrap hidden">
-    <div class="auth-card">
-      <div class="auth-brand">
-        <span class="brand-mark">◈</span>
-        <div>
-          <div class="brand-name">DeepSeek Harness</div>
-          <div class="brand-sub">管理平台</div>
+    <section class="auth-hero" aria-label="智慧交通 DeepHarness AI 助手介绍">
+      <div class="auth-hero-brand">
+        <span class="auth-hero-logo" aria-hidden="true">DH</span>
+        <div><strong>智慧交通</strong><span>SMART TRANSPORTATION</span></div>
+      </div>
+      <div class="auth-hero-content">
+        <p class="auth-eyebrow"><span></span> AI 智能协同平台</p>
+        <h1>智慧交通<br><em>DeepHarness AI 助手</em></h1>
+        <p class="auth-intro">让交通知识、业务流程与运行数据高效协同，为日常办公和业务决策提供可靠的智能支持。</p>
+        <div class="auth-capabilities" aria-label="平台能力">
+          <article><span class="auth-capability-icon">⌘</span><div><strong>交通知识随时可用</strong><small>规章检索、文档理解与经验沉淀</small></div></article>
+          <article><span class="auth-capability-icon">◇</span><div><strong>业务流程智能协同</strong><small>材料识别、任务分派与规则校验</small></div></article>
+          <article><span class="auth-capability-icon">⌁</span><div><strong>运行数据辅助分析</strong><small>快速汇集信息，提升协同决策效率</small></div></article>
         </div>
       </div>
-
-      <div class="segmented" role="tablist">
-        <button id="tab-login" class="seg" role="tab">登录</button>
-        <button id="tab-register" class="seg" role="tab">注册</button>
+      <div class="auth-city-scene" aria-hidden="true">
+        <span class="city-building building-one"></span><span class="city-building building-two"></span><span class="city-building building-three"></span>
+        <span class="city-route route-one"></span><span class="city-route route-two"></span><span class="city-node node-one"></span><span class="city-node node-two"></span>
       </div>
+      <p class="auth-hero-foot"><i></i> 智慧赋能交通 · AI 提升效能</p>
+    </section>
 
-      <!-- password login -->
-      <form id="login-form" class="form" novalidate>
-        <div class="field">
-          <label for="login-username">账号</label>
-          <input id="login-username" name="username" autocomplete="username" required />
+    <section class="auth-panel" aria-label="账号登录">
+      <div class="auth-card">
+        <p class="auth-welcome">WELCOME BACK</p>
+        <h2>欢迎登录</h2>
+        <p class="auth-panel-intro">使用您的账号进入 DeepHarness AI 助手</p>
+
+        <label class="theme-picker auth-theme-picker" for="auth-theme-select">
+          <span>界面主题</span>
+          <select id="auth-theme-select" data-theme-select>
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
+
+        <div class="segmented" role="tablist">
+          <button id="tab-login" class="seg" role="tab">登录</button>
+          <button id="tab-register" class="seg" role="tab">注册</button>
         </div>
-        <div class="field">
-          <label for="login-password">密码</label>
-          <div class="pw-row">
-            <input id="login-password" name="password" type="password" autocomplete="current-password" required />
-            <button type="button" class="pw-toggle" data-pw="login-password" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button>
+
+        <!-- password login -->
+        <form id="login-form" class="form" novalidate>
+          <div class="field">
+            <label for="login-username">登录账号</label>
+            <input id="login-username" name="username" placeholder="请输入登录账号" autocomplete="username" required />
           </div>
-        </div>
-        <button class="btn btn-primary btn-block" type="submit">登录</button>
-      </form>
-
-      <!-- registration -->
-      <form id="register-form" class="form hidden" novalidate>
-        <div class="field">
-          <label for="reg-username">账号 <span class="opt">（3–32 位英文字母、数字或 . _ -）</span></label>
-          <input id="reg-username" name="username" autocomplete="username" required minlength="3" maxlength="32" />
-        </div>
-        <div class="field">
-          <label for="reg-password">密码 <span class="opt">（至少 8 个字符）</span></label>
-          <div class="pw-row">
-            <input id="reg-password" name="password" type="password" autocomplete="new-password" required minlength="8" />
-            <button type="button" class="pw-toggle" data-pw="reg-password" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button>
+          <div class="field">
+            <label for="login-password">登录密码</label>
+            <div class="pw-row">
+              <input id="login-password" name="password" type="password" placeholder="请输入登录密码" autocomplete="current-password" required />
+              <button type="button" class="pw-toggle" data-pw="login-password" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button>
+            </div>
           </div>
-        </div>
-        <div class="field">
-          <label for="reg-confirm">确认密码</label>
-          <input id="reg-confirm" name="confirmPassword" type="password" autocomplete="new-password" required />
-        </div>
-        <div class="field hidden" id="register-invite-row">
-          <label for="reg-invite">邀请码</label>
-          <input id="reg-invite" name="inviteCode" autocomplete="off" />
-        </div>
-        <button class="btn btn-primary btn-block" type="submit" id="register-submit">注册账号</button>
-      </form>
+          <button class="btn btn-primary btn-block" type="submit">登录系统 <span aria-hidden="true">→</span></button>
+        </form>
 
-      <p id="auth-msg" class="form-msg" role="alert"></p>
-    </div>
+        <!-- registration -->
+        <form id="register-form" class="form hidden" novalidate>
+          <div class="field">
+            <label for="reg-username">账号 <span class="opt">（3–32 位英文字母、数字或 . _ -）</span></label>
+            <input id="reg-username" name="username" autocomplete="username" required minlength="3" maxlength="32" />
+          </div>
+          <div class="field">
+            <label for="reg-password">密码 <span class="opt">（至少 8 个字符）</span></label>
+            <div class="pw-row">
+              <input id="reg-password" name="password" type="password" autocomplete="new-password" required minlength="8" />
+              <button type="button" class="pw-toggle" data-pw="reg-password" title="显示密码"><span class="nav-icon" data-icon="eye"></span></button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="reg-confirm">确认密码</label>
+            <input id="reg-confirm" name="confirmPassword" type="password" autocomplete="new-password" required />
+          </div>
+          <div class="field hidden" id="register-invite-row">
+            <label for="reg-invite">邀请码</label>
+            <input id="reg-invite" name="inviteCode" autocomplete="off" />
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="register-submit">注册账号</button>
+        </form>
+
+        <p id="auth-msg" class="form-msg" role="alert"></p>
+        <p class="auth-security">⌾ 登录信息将通过安全会话传输，请勿向他人透露账号和密码</p>
+      </div>
+      <p class="auth-copyright">© 2026 DeepHarness 智慧交通 AI 助手</p>
+    </section>
   </div>
 
   <!-- ===================== APP ===================== -->
@@ -78,7 +109,7 @@
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-brand">
         <span class="brand-mark">◈</span>
-        <span class="brand-name">管理平台</span>
+        <span class="brand-name">智慧交通DSH管理平台</span>
       </div>
       <nav class="nav" id="admin-nav">
         <button class="nav-item" data-tab="instances">
@@ -91,6 +122,17 @@
           <span class="nav-icon" data-icon="sliders"></span> 平台设置
         </button>
         <button class="nav-item" data-tab="gateway">
+          <span class="nav-icon" data-icon="key"></span> 模型网关
+        </button>
+        <button class="nav-item" data-tab="plugins">
+          <span class="nav-icon" data-icon="sliders"></span> 默认插件
+        </button>
+      </nav>
+      <nav class="nav hidden" id="user-nav" aria-label="个人功能">
+        <button class="nav-item active" data-user-tab="workspace" type="button">
+          <span class="nav-icon" data-icon="server"></span> 我的工作空间
+        </button>
+        <button class="nav-item" data-user-tab="gateway" type="button">
           <span class="nav-icon" data-icon="key"></span> 模型网关
         </button>
       </nav>
@@ -111,6 +153,14 @@
       <header class="topbar">
         <h1 id="topbar-title">概览</h1>
         <div class="topbar-right">
+          <label class="theme-picker" for="app-theme-select">
+            <span class="sr-only">界面主题</span>
+            <select id="app-theme-select" data-theme-select aria-label="界面主题">
+              <option value="system">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </label>
           <button class="btn btn-ghost" id="refresh-btn" title="刷新">
             <span class="nav-icon" data-icon="refresh"></span>
           </button>
@@ -132,6 +182,17 @@
           <button class="nav-item" data-tab="gateway">
             <span class="nav-icon" data-icon="key"></span> 模型网关
           </button>
+          <button class="nav-item" data-tab="plugins">
+            <span class="nav-icon" data-icon="sliders"></span> 默认插件
+          </button>
+        </div>
+        <div class="mobile-user-nav hidden" id="mobile-user-nav">
+          <button class="nav-item active" data-user-tab="workspace" type="button">
+            <span class="nav-icon" data-icon="server"></span> 工作空间
+          </button>
+          <button class="nav-item" data-user-tab="gateway" type="button">
+            <span class="nav-icon" data-icon="key"></span> 模型网关
+          </button>
         </div>
         <button class="nav-item" id="mobile-profile-btn">
           <span class="nav-icon" data-icon="user"></span> 个人设置
@@ -147,6 +208,7 @@
       <main class="content">
         <!-- user view -->
         <section id="user-view" class="hidden">
+          <section id="user-workspace-view" role="tabpanel">
           <div id="instance-card" class="panel">
             <p id="instance-empty" class="empty">暂未创建实例。</p>
             <div id="instance-body" class="hidden">
@@ -169,11 +231,46 @@
                 <a id="i-launch" class="btn btn-primary" target="_blank" rel="noopener">
                   <span class="nav-icon" data-icon="play"></span> 进入工作空间
                 </a>
+                <button id="i-restart" class="btn btn-ghost" type="button">
+                  <span class="nav-icon" data-icon="refresh"></span> 重启服务
+                </button>
               </div>
-              <p class="hint">可在 DSH“设置 → 模型”添加自己的模型和密钥。个人模型与平台模型并存，个人模型不占平台额度。实例空闲时会自动停止，再次进入时自动启动。</p>
+              <p class="hint">安装要求重启的插件后，可点击“重启服务”使其生效；重启会短暂中断当前连接，但不会删除文件、插件或配置。可在 DSH“设置 → 模型”添加自己的模型和密钥。个人模型与平台模型并存，个人模型不占平台额度。实例空闲时会自动停止，再次进入时自动启动。</p>
               <div id="my-gateway" class="gateway-summary"></div>
+              <div id="my-plugins" class="gateway-summary"></div>
             </div>
           </div>
+          </section>
+          <section id="user-gateway-view" class="hidden" role="tabpanel">
+            <div class="usage-heading"><div><h2>我的模型用量</h2><p class="hint">仅统计你使用的平台模型；个人模型不计入平台额度</p></div><button class="btn btn-ghost" id="my-usage-export" disabled>导出明细 CSV</button></div>
+            <form id="my-gateway-usage-filter" class="usage-filter">
+              <div class="usage-presets" role="group" aria-label="快捷日期范围">
+                <button type="button" data-my-range="today">今日</button><button type="button" data-my-range="yesterday">昨日</button><button type="button" data-my-range="week">本周</button><button type="button" data-my-range="month">本月</button><button type="button" data-my-range="7">近 7 天</button><button type="button" data-my-range="30" class="active" aria-pressed="true">近 30 天</button><button type="button" data-my-range="90">近 90 天</button><button type="button" data-my-range="year">今年</button>
+              </div>
+              <div class="usage-fields my-usage-fields">
+                <label>开始日期<input name="from" type="date" required /></label><label>结束日期<input name="to" type="date" required /></label>
+                <label>模型<select name="modelId"><option value="">全部模型</option></select></label>
+                <label>统计粒度<select name="grain"><option value="auto">自动</option><option value="hour">按小时</option><option value="day">按日</option><option value="week">按周</option><option value="month">按月</option></select></label>
+                <button class="btn btn-primary" type="submit">查询</button><button class="btn btn-ghost" id="my-usage-reset" type="button">重置筛选</button>
+              </div>
+            </form>
+            <p id="my-usage-query-status" class="hint" role="status"></p>
+            <div id="my-usage-dashboard">
+              <div id="my-usage-kpis" class="usage-kpis"></div>
+              <p id="my-usage-accounting" class="usage-accounting"></p>
+              <div class="usage-card"><div class="usage-card-head"><div><h3>消耗趋势</h3><p id="my-usage-trend-note" class="hint"></p></div><div class="usage-chart-controls">
+                <label>指标<select id="my-usage-metric"><option value="actualTokens">实际 Token</option><option value="chargedTokens">额度扣减</option><option value="requests">请求次数</option></select></label>
+                <div class="usage-switch" role="group" aria-label="趋势图格式"><button type="button" data-my-chart-type="line" aria-pressed="true" class="active">折线图</button><button type="button" data-my-chart-type="bar" aria-pressed="false">柱状图</button></div>
+              </div></div><div id="my-usage-trend" class="usage-chart usage-chart-wide" role="img" aria-label="我的 Token 用量趋势图"></div></div>
+              <div class="usage-charts-grid">
+                <div class="usage-card"><div class="usage-card-head"><div><h3>模型消耗分布</h3><p class="hint">实际 Token 占比 · 点击扇区筛选模型</p></div></div><div id="my-usage-models-chart" class="usage-chart" role="img" aria-label="我的模型 Token 消耗环形图"></div></div>
+                <div class="usage-card"><div class="usage-card-head"><div><h3>活跃时段</h3><p class="hint">北京时间 · 星期和小时的实际 Token 合计</p></div></div><div id="my-usage-heatmap" class="usage-chart" role="img" aria-label="我的活跃时段 Token 热力图"></div></div>
+                <div class="usage-card"><div class="usage-card-head"><div><h3>请求与结算状态</h3><p class="hint">已结算、明确失败、待核实和进行中分别展示</p></div></div><div id="my-usage-requests-chart" class="usage-chart" role="img" aria-label="我的请求结算状态柱状图"></div></div>
+              </div>
+              <div class="usage-card"><div class="usage-card-head"><h3>用量明细</h3><label class="usage-table-mode">汇总方式<select id="my-usage-table-mode"><option value="model">按模型</option><option value="period">按时间</option><option value="detail">时间 × 模型</option></select></label></div><div id="my-gateway-usage"></div><div id="my-usage-pagination" class="usage-pagination"></div></div>
+            </div>
+            <p class="hint usage-footnote">实际 Token = 输入 + 输出。额度扣减可能包含缺少完整用量回执的保守预估；进行中的请求单独显示为预留额度。</p>
+          </section>
         </section>
 
         <!-- admin view -->
@@ -216,9 +313,64 @@
             </form>
             <p id="settings-msg" class="form-msg"></p>
           </div>
+          <div class="panel hidden" id="panel-plugins">
+            <h2>默认插件</h2>
+            <form id="plugins-form" class="form">
+              <div class="field"><label for="plugin-commands">插件安装命令（每行一个插件）</label>
+                <textarea id="plugin-commands" class="input" rows="5" maxlength="8192" spellcheck="false" placeholder="dsh plugin --profile web add dshmarket"></textarea>
+              </div>
+              <p class="hint">支持 npm 包名、@组织/包名以及 @版本，例如 dshmarket@1.41.0。保存后新用户会自动安装并启用。清空或移除命令只改变默认配置，不卸载已有插件。</p>
+              <div class="cell-actions"><button id="plugins-save" class="btn btn-primary" type="submit">保存默认插件</button><button id="plugins-apply" class="btn btn-ghost" type="button">为全部已有实例安装并重启</button></div>
+            </form>
+            <p class="hint">批量操作使用已保存的命令，逐个安装，成功后自动重启，会中断当前对话连接；停止的实例也会启动。用户的模型配置、工作文件和其他插件保留。单个插件安装最多等待 5 分钟，失败可单独重试。</p>
+            <p id="plugins-status" role="status" class="hint"></p>
+            <div id="plugins-instances"></div>
+          </div>
           <div class="panel hidden" id="panel-gateway">
-            <div class="panel-head"><h2>模型网关</h2><button class="btn btn-primary" id="gateway-add-model">添加模型</button></div>
+            <div class="panel-head"><h2>模型网关</h2><span class="hint">统一配置 · 用量洞察</span></div>
             <p id="gateway-status" class="hint" role="status">正在加载…</p>
+            <div class="usage-tabs" role="tablist" aria-label="模型网关页面">
+              <button class="btn active" id="gateway-analytics-tab" role="tab" aria-selected="true" aria-controls="gateway-analytics-view">用量分析</button>
+              <button class="btn" id="gateway-config-tab" role="tab" aria-selected="false" aria-controls="gateway-config-view">模型与额度配置</button>
+            </div>
+            <section id="gateway-analytics-view" role="tabpanel" aria-labelledby="gateway-analytics-tab">
+              <div class="usage-heading"><div><h2>Token 用量概览</h2><p class="hint">从整体趋势到每位用户，查看平台模型的消耗情况</p></div><button class="btn btn-ghost" id="usage-export" disabled>导出明细 CSV</button></div>
+              <form id="gateway-usage-filter" class="usage-filter">
+                <div class="usage-presets" role="group" aria-label="快捷日期范围">
+                  <button type="button" data-range="today">今日</button><button type="button" data-range="yesterday">昨日</button><button type="button" data-range="week">本周</button><button type="button" data-range="month">本月</button><button type="button" data-range="7">近 7 天</button><button type="button" data-range="30" class="active" aria-pressed="true">近 30 天</button><button type="button" data-range="90">近 90 天</button><button type="button" data-range="year">今年</button>
+                </div>
+                <div class="usage-fields">
+                  <label>开始日期<input name="from" type="date" required /></label><label>结束日期<input name="to" type="date" required /></label>
+                  <label>用户<select name="userId"><option value="">全部用户</option></select></label>
+                  <label>模型<select name="modelId"><option value="">全部模型</option></select></label>
+                  <label>统计粒度<select name="grain"><option value="auto">自动</option><option value="hour">按小时</option><option value="day">按日</option><option value="week">按周</option><option value="month">按月</option></select></label>
+                  <button class="btn btn-primary" type="submit">查询</button><button class="btn btn-ghost" id="usage-reset" type="button">重置筛选</button>
+                </div>
+              </form>
+              <p id="usage-query-status" class="hint" role="status"></p>
+              <div id="usage-dashboard">
+                <div id="usage-kpis" class="usage-kpis"></div>
+                <p id="usage-accounting" class="usage-accounting"></p>
+                <div class="usage-card usage-trend-card">
+                  <div class="usage-card-head"><div><h3>消耗趋势</h3><p id="usage-trend-note" class="hint"></p></div><div class="usage-chart-controls">
+                    <label>指标<select id="usage-metric"><option value="actualTokens">实际 Token</option><option value="chargedTokens">额度扣减</option><option value="requests">请求次数</option></select></label>
+                    <label>对比维度<select id="usage-dimension"><option value="total">输入 / 输出</option><option value="user">按用户对比</option><option value="model">按模型对比</option></select></label>
+                    <div class="usage-switch" role="group" aria-label="趋势图格式"><button type="button" data-chart-type="line" aria-pressed="true" class="active">折线图</button><button type="button" data-chart-type="bar" aria-pressed="false">柱状图</button></div>
+                  </div></div>
+                  <div id="usage-trend" class="usage-chart usage-chart-wide" role="img" aria-label="Token 用量趋势图"></div>
+                </div>
+                <div class="usage-charts-grid">
+                  <div class="usage-card"><div class="usage-card-head"><div><h3>用户消耗排行</h3><p class="hint">实际 Token 前 10 位 · 点击柱条筛选用户</p></div></div><div id="usage-users-chart" class="usage-chart" role="img" aria-label="用户 Token 消耗柱状图"></div></div>
+                  <div class="usage-card"><div class="usage-card-head"><div><h3>模型消耗分布</h3><p class="hint">实际 Token 占比 · 点击扇区筛选模型</p></div></div><div id="usage-models-chart" class="usage-chart" role="img" aria-label="模型 Token 消耗环形图"></div></div>
+                  <div class="usage-card"><div class="usage-card-head"><div><h3>活跃时段</h3><p class="hint">北京时间 · 所选日期内各星期 / 小时的实际 Token 合计</p></div></div><div id="usage-heatmap" class="usage-chart" role="img" aria-label="一周时段 Token 消耗热力图"></div></div>
+                  <div class="usage-card"><div class="usage-card-head"><div><h3>请求与结算状态</h3><p class="hint">已结算、明确失败、待核实和进行中分别展示</p></div></div><div id="usage-requests-chart" class="usage-chart" role="img" aria-label="请求结算状态柱状图"></div></div>
+                </div>
+                <div class="usage-card"><div class="usage-card-head"><h3>用量明细</h3><label class="usage-table-mode">汇总方式<select id="usage-table-mode"><option value="user">按用户</option><option value="model">按模型</option><option value="period">按时间</option><option value="detail">时间 × 用户 × 模型</option></select></label></div><div id="gateway-usage"></div><div id="usage-pagination" class="usage-pagination"></div></div>
+              </div>
+              <p class="hint usage-footnote">仅统计平台网关请求；个人模型不计入。实际 Token = 输入 + 输出，包含供应商已计入的缓存及推理 Token，不重复累加。未保存缓存细分和价格数据，因此不展示缓存命中率或金额。</p>
+            </section>
+            <section id="gateway-config-view" class="hidden" role="tabpanel" aria-labelledby="gateway-config-tab">
+            <div class="panel-head"><h3>平台模型</h3><button class="btn btn-primary" id="gateway-add-model">添加模型</button></div>
             <div id="gateway-models"></div>
             <h3>新用户默认额度</h3>
             <form id="gateway-defaults" class="form form-narrow">
@@ -232,19 +384,16 @@
             <h3>用户模型与额度</h3>
             <p class="hint">北京时间每天 00:00 重置，输入 + 输出 Token 合计。调用前预留额度，结束后按实际用量结算；中断且无用量回执时保留预估扣减。平台模型当前支持文本和工具调用。</p>
             <div id="gateway-users"></div>
-            <h3>用量统计</h3>
-            <form id="gateway-usage-filter" class="gateway-filter">
-              <label>开始日期 <input name="from" type="date" required /></label>
-              <label>结束日期 <input name="to" type="date" required /></label>
-              <button class="btn btn-ghost" type="submit">查询</button>
-            </form>
-            <div id="gateway-usage"></div>
+            </section>
           </div>
         </section>
       </main>
     </div>
   </div>
 
+  <script src="/vendor/echarts.min.js"></script>
+  <script src="/gateway-charts.js"></script>
+  <script src="/my-gateway-charts.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

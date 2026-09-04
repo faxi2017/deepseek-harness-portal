@@ -3,20 +3,20 @@
 管理员登录 Portal，打开左侧“默认插件”。每行输入一个命令，例如：
 
 ```sh
-dsh plugin --profile web add dshmarket
+npx @deepseek-ai/dsh plugin --profile web add -w dshmarket
 ```
 
 官方 [dsh-market 安装说明](https://github.com/dsh-market/dsh-market) 要求安装后重启 DSH。当前 npm DSH 的 `plugin add` 会调用 pnpm 安装依赖，并把声明 `dsh.bundle.patch` 的包加入 `web` profile 的 bundles。Portal 复用这个机制，不修改 DSH 源码或为用户生成不同镜像。
 
 ## 后台操作
 
-1. **保存默认插件**：新用户创建实例时自动安装、启用并重启。每行一个 npm 插件包；支持 `@组织/包名`、`包名@1.2.3` 和版本标签。不支持 shell 命令、路径、Git 地址、其他 profile 或附加参数。
+1. **保存默认插件**：新用户创建实例时自动安装、启用并重启。每行一个插件来源；支持 `dsh plugin --profile web add -w 包名`、`npx @deepseek-ai/dsh plugin --profile web add -w 包名`、`npm install 包名`，以及 HTTPS `.tgz` 插件包地址，也支持 `@组织/包名`、`包名@1.2.3` 和版本标签。所有形式都会标准化为 DSH web profile 中的 `dsh plugin … add -w`，确保包被启用；不支持 shell 命令、全局安装（`-g`）、路径、Git 地址、HTTP 地址、带查询参数或凭据的 URL、其他 profile 或附加参数。
 2. **为全部已有实例安装并重启**：执行已保存的命令，逐个处理实例；安装成功后重启并检查 HTTP 健康。停止的实例会启动；重启会中断当前对话连接。
 3. **安装 / 重试**：仅处理这一实例。重复提交正在执行的任务不会重复安装。单个失败不阻止队列中其他实例；任务不依赖页面保持打开。
 4. 状态展示排队、执行、成功或失败，以及成功任务检查到的包版本。安装期间不能修改默认配置；列表每 6 秒刷新，不覆盖正在编辑的文本框。
 5. 移除命令或清空后保存，只改变默认安装，不自动卸载任何已有插件。用户仍可自行管理其他插件。
 
-未填写版本的命令在每次实际执行时由 npm 解析版本，因此“安装 / 重试”也可能更新该插件。若需要固定版本，填写 `dsh plugin --profile web add dshmarket@1.41.0`。本地本次实际安装版本为 **1.41.0**。
+未填写版本的命令在每次实际执行时由 npm 解析版本，因此“安装 / 重试”也可能更新该插件。若需要固定版本，填写 `dsh plugin --profile web add -w dshmarket@1.41.0`。本地本次实际安装版本为 **1.41.0**。
 
 ## 生命周期和失败处理
 

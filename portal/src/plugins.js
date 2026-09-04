@@ -11,24 +11,49 @@ db.exec(`CREATE TABLE IF NOT EXISTS instance_plugin_inventory (
 )`)
 
 const PLUGIN_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
+const PLUGIN_VERSION_RE = /(?:\\?@[a-zA-Z0-9][a-zA-Z0-9.+_-]*)?/
+const PLUGIN_SPEC_RE = new RegExp(`^((?:@[a-z0-9][a-z0-9._-]*\\/)?[a-z0-9][a-z0-9._-]*)(${PLUGIN_VERSION_RE.source})$`)
+const DSH_NPX_RE = /@deepseek-ai\/dsh(?:@[a-zA-Z0-9][a-zA-Z0-9.+_-]*)?/
 
 export function validPluginName(value) {
   return typeof value === 'string' && PLUGIN_NAME_RE.test(value)
+}
+
+function pluginTarballUrl(value) {
+  if (!value.startsWith('https://')) return null
+  let url
+  try { url = new URL(value) } catch { return null }
+  if (url.username || url.password || url.search || url.hash || !url.pathname.toLowerCase().endsWith('.tgz')) return null
+  return url.href
 }
 
 export function parsePluginCommands(text) {
   if (typeof text !== 'string' || text.length > 8192) throw new Error('安装命令最长 8192 个字符。')
   const commands = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   if (commands.length > 20) throw new Error('最多设置 20 个默认插件。')
-  const names = new Set()
+  const sources = new Set()
   return commands.map((command) => {
-    const match = /^dsh\s+plugin\s+--profile\s+web\s+add\s+((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)(@[a-zA-Z0-9][a-zA-Z0-9.+_-]*)?$/.exec(command)
-    if (!match) throw new Error('每行仅支持 dsh plugin --profile web add npm包名，可在包名后加 @版本；不支持其他命令、路径或附加参数。')
+    const forms = [
+      /^dsh\s+plugin\s+--profile\s+web\s+add\s+(?:-w\s+)?(.+)$/,
+      new RegExp(`^npx\\s+(?:-y\\s+|--yes\\s+)?${DSH_NPX_RE.source}\\s+plugin\\s+--profile\\s+web\\s+add\\s+(?:-w\\s+)?(.+)$`),
+      /^npm\s+(?:install|i)\s+(?:--save(?:-prod)?\s+)?(.+)$/,
+    ]
+    const specText = forms.map((pattern) => pattern.exec(command)?.[1]).find(Boolean)
+    const tarball = pluginTarballUrl(specText ?? '')
+    if (tarball) {
+      if (sources.has(tarball)) throw new Error('同一个插件只能配置一次。')
+      sources.add(tarball)
+      return { name: null, spec: tarball, command: `dsh plugin --profile web add -w ${tarball}` }
+    }
+    const match = PLUGIN_SPEC_RE.exec(specText ?? '')
+    if (!match) throw new Error('每行仅支持 DSH 插件或 npm 安装格式：dsh plugin --profile web add -w 包名、npx @deepseek-ai/dsh plugin --profile web add -w 包名、npm install 包名，或 HTTPS .tgz 插件包；不支持全局安装、路径、脚本或其他 npm 参数。')
     const name = match[1]
-    if (names.has(name)) throw new Error('同一个插件只能配置一次。')
-    names.add(name)
-    const spec = name + (match[2] ?? '')
-    return { name, spec, command: `dsh plugin --profile web add ${spec}` }
+    if (sources.has(name)) throw new Error('同一个插件只能配置一次。')
+    sources.add(name)
+    const spec = name + (match[2] ?? '').replace(/^\\@/, '@')
+    // DSH profiles are pnpm workspace roots. Always pass -w to the installed
+    // DSH CLI, including when the admin pasted the equivalent npx/npm form.
+    return { name, spec, command: `dsh plugin --profile web add -w ${spec}` }
   })
 }
 
@@ -48,7 +73,7 @@ export function recordPluginInventory(id, plugins) {
 }
 export function protectedPluginNames() {
   const names = new Set(['dshmarket'])
-  for (const plugin of parsePluginCommands(pluginDefaults().commands)) names.add(plugin.name)
+  for (const plugin of parsePluginCommands(pluginDefaults().commands)) if (plugin.name) names.add(plugin.name)
   return names
 }
 export const pluginsBusy = () => Boolean(db.prepare("SELECT 1 FROM instance_plugins WHERE state IN ('queued','running') LIMIT 1").get())
@@ -70,10 +95,9 @@ export function recoverPluginJobs() {
 }
 
 const inspectInstalled = `const fs=require('fs');const path=require('path');
-const root='/home/dsh/.dsh/profiles/web';const p=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
-const result=process.argv.slice(1).map(name=>{const m=JSON.parse(fs.readFileSync(path.join(root,'node_modules',name,'package.json'),'utf8'));
-if(!p.dependencies?.[name]||!p.dsh?.profile?.bundles?.includes(name)||!m.dsh?.bundle?.patch)throw new Error('Plugin not enabled');
-return {name,version:m.version};});console.log(JSON.stringify(result));`
+const root='/home/dsh/.dsh/profiles/web';const p=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));const bundles=new Set(p.dsh?.profile?.bundles??[]);const result=[];
+for(const name of bundles){try{const m=JSON.parse(fs.readFileSync(path.join(root,'node_modules',name,'package.json'),'utf8'));if(p.dependencies?.[name]&&m.dsh?.bundle?.patch)result.push({name,version:m.version})}catch{}}
+console.log(JSON.stringify(result));`
 
 export async function installPluginCommands(name, commands) {
   const plugins = parsePluginCommands(commands)
@@ -83,9 +107,9 @@ export async function installPluginCommands(name, commands) {
     await docker(['exec', '--user', '1000:1000', '-e', 'CI=true', name,
       'flock', '-n', '/home/dsh/.dsh/portal-plugin-install.lock',
       'timeout', '--signal=TERM', '--kill-after=10s', '300s',
-      'dsh', 'plugin', '--profile', 'web', 'add', plugin.spec], { timeout: 330000 })
+      'dsh', 'plugin', '--profile', 'web', 'add', '-w', plugin.spec], { timeout: 330000 })
   }
-  const { stdout } = await docker(['exec', '--user', '1000:1000', name, 'node', '-e', inspectInstalled, ...plugins.map((p) => p.name)])
+  const { stdout } = await docker(['exec', '--user', '1000:1000', name, 'node', '-e', inspectInstalled])
   return JSON.parse(stdout)
 }
 

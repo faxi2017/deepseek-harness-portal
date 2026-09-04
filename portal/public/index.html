@@ -327,9 +327,9 @@
             <h2>默认插件</h2>
             <form id="plugins-form" class="form">
               <div class="field"><label for="plugin-commands">插件安装命令（每行一个插件）</label>
-                <textarea id="plugin-commands" class="input" rows="5" maxlength="8192" spellcheck="false" placeholder="dsh plugin --profile web add dshmarket"></textarea>
+                <textarea id="plugin-commands" class="input" rows="5" maxlength="8192" spellcheck="false" placeholder="npx @deepseek-ai/dsh plugin --profile web add -w @wsz987/dsh-channels@latest"></textarea>
               </div>
-              <p class="hint">支持 npm 包名、@组织/包名以及 @版本，例如 dshmarket@1.41.0。保存后新用户会自动安装并启用。清空或移除命令只改变默认配置，不卸载已有插件。</p>
+              <p class="hint">支持 <code>dsh plugin --profile web add -w 包名</code>、<code>npx @deepseek-ai/dsh plugin --profile web add -w 包名</code>、<code>npm install 包名</code> 和 HTTPS <code>.tgz</code> 插件包地址。所有格式都会安装到 DSH 的 web profile 并启用插件，不支持 <code>-g</code>、脚本、路径或其他 npm 参数。保存后新用户会自动安装并启用；清空或移除命令只改变默认配置，不卸载已有插件。</p>
               <div class="cell-actions"><button id="plugins-save" class="btn btn-primary" type="submit">保存默认插件</button><button id="plugins-apply" class="btn btn-ghost" type="button">为全部已有实例安装并重启</button></div>
             </form>
             <p class="hint">批量操作使用已保存的命令，逐个安装，成功后自动重启，会中断当前对话连接；停止的实例也会启动。用户的模型配置、工作文件和其他插件保留。单个插件安装最多等待 5 分钟，失败可单独重试。</p>

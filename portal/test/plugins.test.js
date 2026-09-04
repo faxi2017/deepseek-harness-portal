@@ -64,9 +64,26 @@ test.beforeEach(() => {
 })
 test.after(async () => { await admin.close(); await new Promise((resolve) => healthy.close(resolve)); db.close(); rmSync(dir, { recursive: true, force: true }) })
 
-test('plugin command parser accepts npm specs and rejects shell, flags, paths, alternate profiles and duplicate packages', () => {
-  assert.equal(plugins.parsePluginCommands('dsh plugin --profile web add dshmarket\n dsh plugin --profile web add @org/plugin@1.2.3-beta.1')[1].spec, '@org/plugin@1.2.3-beta.1')
-  for (const value of [null, 'echo hi', 'dsh plugin --profile desktop add dshmarket', 'dsh plugin --profile web add x;reboot', 'dsh plugin --profile web add $(echo)', 'dsh plugin --profile web add x --ignore-scripts', 'dsh plugin --profile web add ../foo', 'dsh plugin --profile web add https://host/plugin.tgz', 'dsh plugin --profile web add x\ndsh plugin --profile web add x@1.0.0']) assert.throws(() => plugins.parsePluginCommands(value))
+test('plugin command parser normalizes supported DSH, npx and npm forms while rejecting unsafe arguments', () => {
+  const parsed = plugins.parsePluginCommands(`dsh plugin --profile web add dshmarket
+    npx @deepseek-ai/dsh plugin --profile web add -w @wsz987/dsh-channels\\@latest
+    npm install @org/plugin@1.2.3-beta.1
+    dsh plugin --profile web add https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz`)
+  assert.deepEqual(parsed.map((plugin) => plugin.spec), ['dshmarket', '@wsz987/dsh-channels@latest', '@org/plugin@1.2.3-beta.1', 'https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz'])
+  assert.equal(parsed[1].command, 'dsh plugin --profile web add -w @wsz987/dsh-channels@latest')
+  assert.equal(parsed[3].name, null)
+  for (const value of [null, 'echo hi', 'dsh plugin --profile desktop add dshmarket', 'dsh plugin --profile web add x;reboot', 'dsh plugin --profile web add $(echo)', 'dsh plugin --profile web add x --ignore-scripts', 'dsh plugin --profile web add ../foo', 'dsh plugin --profile web add http://host/plugin.tgz', 'dsh plugin --profile web add https://host/plugin.tar.gz', 'dsh plugin --profile web add https://host/plugin.tgz?version=1', 'npm install -g dshmarket', 'npm install --ignore-scripts dshmarket', 'dsh plugin --profile web add x\nnpm i x@1.0.0']) assert.throws(() => plugins.parsePluginCommands(value))
+})
+
+test('HTTPS tarball defaults are passed to the DSH CLI and inventory is read from the profile', async () => {
+  const source = 'https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz'
+  plugins.savePluginDefaults(`dsh plugin --profile web add ${source}`)
+  await provision(id)
+  const install = calls.find((args) => args.includes('flock'))
+  assert.equal(install.at(-1), source)
+  const inspect = calls.find((args) => args[0] === 'exec' && args.includes('node'))
+  assert.ok(!inspect.includes(source))
+  assert.equal(plugins.pluginState(id).state, 'completed')
 })
 
 test('new instance installs defaults before completion; re-provision preserves volumes and does not reinstall an applied revision', async () => {
@@ -75,7 +92,7 @@ test('new instance installs defaults before completion; re-provision preserves v
   assert.equal(plugins.pluginState(id).state, 'completed')
   assert.equal(getInstanceById(id).status, 'running')
   const install = calls.find((args) => args.includes('flock'))
-  assert.deepEqual(install.slice(-6), ['dsh', 'plugin', '--profile', 'web', 'add', 'dshmarket'])
+  assert.deepEqual(install.slice(-7), ['dsh', 'plugin', '--profile', 'web', 'add', '-w', 'dshmarket'])
   assert.ok(install.includes('1000:1000') && install.includes('300s'))
   assert.ok(calls.some((args) => args[0] === 'restart'))
   await provision(id)

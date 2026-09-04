@@ -93,7 +93,7 @@ SQLite 表：users、instances、sessions、settings、auth_rate_limits，以及
 
 home 卷包含插件 profile 和依赖；重启/重建保留。要求修改系统目录、root、额外 apt 依赖的插件不能由普通租户随意安装，需要管理员调整镜像。不能承诺任意插件都兼容新 DSH。
 
-后台已增加“默认插件”：保存 `dsh plugin --profile web add npm包名`（每行一个），为新实例自动安装并启用；支持已有实例批量安装、自动重启、逐实例状态和重试。插件独立于镜像，已有成功配置在保留卷重建时不重复安装，不覆盖个人模型或工作区。实现为 `plugins.js`、`plugin-admin.js` 与既有编排器；说明和边界见 `DEFAULT_PLUGINS.md`。本地已保存 dshmarket 默认命令，并通过后台为 fangxi 安装 1.41.0；新用户注册自动安装及原生市场页面已验证。
+后台已增加“默认插件”：支持保存 `dsh plugin --profile web add -w 包名`、`npx @deepseek-ai/dsh plugin --profile web add -w 包名`、`npm install 包名` 或 HTTPS `.tgz` 插件包地址（每行一个）；均以受控的 DSH web profile 安装并启用。HTTPS tarball 不允许凭据、查询参数或片段，安装后从实际 DSH profile 识别包名和版本。支持已有实例批量安装、自动重启、逐实例状态和重试。插件独立于镜像，已有成功配置在保留卷重建时不重复安装，不覆盖个人模型或工作区。实现为 `plugins.js`、`plugin-admin.js` 与既有编排器；说明和边界见 `DEFAULT_PLUGINS.md`。本地已保存 dshmarket 默认命令，并通过后台为 fangxi 安装 1.41.0；新用户注册自动安装及原生市场页面已验证。
 
 升级 Portal：更新代码 + npm ci + 重启服务，不更新用户 DSH。升级 DSH：管理员在“DSH 版本”页构建新镜像，在实例管理中灰度切换；系统先备份两个用户卷，健康检查失败自动恢复旧镜像和数据，成功记录可手动回退。Reprovision 保留卷；Delete 删除卷。
 

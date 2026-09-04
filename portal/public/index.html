@@ -242,7 +242,7 @@
           </div>
           </section>
           <section id="user-gateway-view" class="hidden" role="tabpanel">
-            <div class="usage-heading"><div><h2>我的模型用量</h2><p class="hint">仅统计你使用的平台模型；个人模型不计入平台额度</p></div><button class="btn btn-ghost" id="my-usage-export" disabled>导出明细 CSV</button></div>
+            <div class="usage-heading"><div><h2>我的模型用量</h2><p class="hint">统计平台模型与 DSH 个人模型；个人模型不计入平台额度</p></div><button class="btn btn-ghost" id="my-usage-export" disabled>导出明细 CSV</button></div>
             <form id="my-gateway-usage-filter" class="usage-filter">
               <div class="usage-presets" role="group" aria-label="快捷日期范围">
                 <button type="button" data-my-range="today">今日</button><button type="button" data-my-range="yesterday">昨日</button><button type="button" data-my-range="week">本周</button><button type="button" data-my-range="month">本月</button><button type="button" data-my-range="7">近 7 天</button><button type="button" data-my-range="30" class="active" aria-pressed="true">近 30 天</button><button type="button" data-my-range="90">近 90 天</button><button type="button" data-my-range="year">今年</button>
@@ -265,11 +265,11 @@
               <div class="usage-charts-grid">
                 <div class="usage-card"><div class="usage-card-head"><div><h3>模型消耗分布</h3><p class="hint">实际 Token 占比 · 点击扇区筛选模型</p></div></div><div id="my-usage-models-chart" class="usage-chart" role="img" aria-label="我的模型 Token 消耗环形图"></div></div>
                 <div class="usage-card"><div class="usage-card-head"><div><h3>活跃时段</h3><p class="hint">北京时间 · 星期和小时的实际 Token 合计</p></div></div><div id="my-usage-heatmap" class="usage-chart" role="img" aria-label="我的活跃时段 Token 热力图"></div></div>
-                <div class="usage-card"><div class="usage-card-head"><div><h3>请求与结算状态</h3><p class="hint">已结算、明确失败、待核实和进行中分别展示</p></div></div><div id="my-usage-requests-chart" class="usage-chart" role="img" aria-label="我的请求结算状态柱状图"></div></div>
+                <div class="usage-card"><div class="usage-card-head"><div><h3>请求与结算状态</h3><p class="hint">已收到用量、明确失败、待核实和进行中分别展示</p></div></div><div id="my-usage-requests-chart" class="usage-chart" role="img" aria-label="我的请求结算状态柱状图"></div></div>
               </div>
               <div class="usage-card"><div class="usage-card-head"><h3>用量明细</h3><label class="usage-table-mode">汇总方式<select id="my-usage-table-mode"><option value="model">按模型</option><option value="period">按时间</option><option value="detail">时间 × 模型</option></select></label></div><div id="my-gateway-usage"></div><div id="my-usage-pagination" class="usage-pagination"></div></div>
             </div>
-            <p class="hint usage-footnote">实际 Token = 输入 + 输出。额度扣减可能包含缺少完整用量回执的保守预估；进行中的请求单独显示为预留额度。</p>
+            <p class="hint usage-footnote">个人模型在 DSH 返回已完成用量后同步，仅保存模型标识、时间和 Token 数，不保存个人 Key、提示词或回复。实际 Token = 输入 + 输出；个人模型不扣平台额度。</p>
           </section>
         </section>
 
@@ -334,7 +334,7 @@
               <button class="btn" id="gateway-config-tab" role="tab" aria-selected="false" aria-controls="gateway-config-view">模型与额度配置</button>
             </div>
             <section id="gateway-analytics-view" role="tabpanel" aria-labelledby="gateway-analytics-tab">
-              <div class="usage-heading"><div><h2>Token 用量概览</h2><p class="hint">从整体趋势到每位用户，查看平台模型的消耗情况</p></div><button class="btn btn-ghost" id="usage-export" disabled>导出明细 CSV</button></div>
+              <div class="usage-heading"><div><h2>Token 用量概览</h2><p class="hint">从整体趋势到每位用户，查看平台与个人模型的消耗情况</p></div><button class="btn btn-ghost" id="usage-export" disabled>导出明细 CSV</button></div>
               <form id="gateway-usage-filter" class="usage-filter">
                 <div class="usage-presets" role="group" aria-label="快捷日期范围">
                   <button type="button" data-range="today">今日</button><button type="button" data-range="yesterday">昨日</button><button type="button" data-range="week">本周</button><button type="button" data-range="month">本月</button><button type="button" data-range="7">近 7 天</button><button type="button" data-range="30" class="active" aria-pressed="true">近 30 天</button><button type="button" data-range="90">近 90 天</button><button type="button" data-range="year">今年</button>
@@ -363,11 +363,11 @@
                   <div class="usage-card"><div class="usage-card-head"><div><h3>用户消耗排行</h3><p class="hint">实际 Token 前 10 位 · 点击柱条筛选用户</p></div></div><div id="usage-users-chart" class="usage-chart" role="img" aria-label="用户 Token 消耗柱状图"></div></div>
                   <div class="usage-card"><div class="usage-card-head"><div><h3>模型消耗分布</h3><p class="hint">实际 Token 占比 · 点击扇区筛选模型</p></div></div><div id="usage-models-chart" class="usage-chart" role="img" aria-label="模型 Token 消耗环形图"></div></div>
                   <div class="usage-card"><div class="usage-card-head"><div><h3>活跃时段</h3><p class="hint">北京时间 · 所选日期内各星期 / 小时的实际 Token 合计</p></div></div><div id="usage-heatmap" class="usage-chart" role="img" aria-label="一周时段 Token 消耗热力图"></div></div>
-                  <div class="usage-card"><div class="usage-card-head"><div><h3>请求与结算状态</h3><p class="hint">已结算、明确失败、待核实和进行中分别展示</p></div></div><div id="usage-requests-chart" class="usage-chart" role="img" aria-label="请求结算状态柱状图"></div></div>
+                  <div class="usage-card"><div class="usage-card-head"><div><h3>请求与结算状态</h3><p class="hint">已收到用量、明确失败、待核实和进行中分别展示</p></div></div><div id="usage-requests-chart" class="usage-chart" role="img" aria-label="请求结算状态柱状图"></div></div>
                 </div>
                 <div class="usage-card"><div class="usage-card-head"><h3>用量明细</h3><label class="usage-table-mode">汇总方式<select id="usage-table-mode"><option value="user">按用户</option><option value="model">按模型</option><option value="period">按时间</option><option value="detail">时间 × 用户 × 模型</option></select></label></div><div id="gateway-usage"></div><div id="usage-pagination" class="usage-pagination"></div></div>
               </div>
-              <p class="hint usage-footnote">仅统计平台网关请求；个人模型不计入。实际 Token = 输入 + 输出，包含供应商已计入的缓存及推理 Token，不重复累加。未保存缓存细分和价格数据，因此不展示缓存命中率或金额。</p>
+              <p class="hint usage-footnote">平台请求与已同步的 DSH 个人模型请求一起展示。个人模型仅在返回已完成用量后计入，不扣平台额度；系统不保存个人 Key、提示词或回复。实际 Token = 输入 + 输出。</p>
             </section>
             <section id="gateway-config-view" class="hidden" role="tabpanel" aria-labelledby="gateway-config-tab">
             <div class="panel-head"><h3>平台模型</h3><button class="btn btn-primary" id="gateway-add-model">添加模型</button></div>

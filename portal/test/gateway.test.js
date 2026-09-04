@@ -11,6 +11,8 @@ const { db, createUser, setSetting, deleteUser } = await import('../src/db.js')
 const store = await import('../src/gateway-store.js')
 const { buildGateway, prepareRequest } = await import('../src/gateway.js')
 const { registerGatewayAdmin } = await import('../src/gateway-admin.js')
+const { gatewayAnalytics } = await import('../src/gateway-analytics.js')
+const { personalUsageFromEvents, recordPersonalUsage, personalModelKey } = await import('../src/personal-usage.js')
 const { config } = await import('../src/config.js')
 let mode = 'success'
 let upstreamCalls = 0
@@ -60,7 +62,7 @@ registerGatewayAdmin(admin, {
 })
 let uid, other, model, token
 test.beforeEach(() => {
-  db.exec('DELETE FROM gateway_requests; DELETE FROM gateway_users; DELETE FROM gateway_models; DELETE FROM users;')
+  db.exec('DELETE FROM personal_usage_records; DELETE FROM gateway_requests; DELETE FROM gateway_users; DELETE FROM gateway_models; DELETE FROM users;')
   uid = Number(createUser({ username: 'alice', name: 'Alice' }))
   other = Number(createUser({ username: 'bob', name: 'Bob' }))
   db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
@@ -292,4 +294,34 @@ test('my analytics is limited to the signed-in user and omits identity fields', 
 
   const blocked = await admin.inject({ url: `/api/gateway/analytics?from=2026-09-02&to=2026-09-02&userId=${other}`, headers: { 'test-user': String(uid) } })
   assert.equal(blocked.statusCode, 400)
+})
+
+test('completed personal-model events are idempotent, visible in analytics, and never consume platform quota', async () => {
+  const occurredAt = Date.parse('2026-09-02T03:00:00Z')
+  const records = personalUsageFromEvents(uid, 'session-personal', [
+    { type: 'assistant/message', seq: 7, time: occurredAt, data: { message: { source: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }, usage: { inputTokens: 80, outputTokens: 20, cacheReadTokens: 30, reasoningTokens: 4 } } },
+    { type: 'assistant/message', seq: 8, time: occurredAt, data: { message: { source: { provider: 'portal-gateway', model: 'm-test' } }, usage: { inputTokens: 1, outputTokens: 1 } } },
+  ])
+  assert.equal(records.length, 1)
+  assert.equal(records[0].modelKey, personalModelKey('deepseek-official', 'deepseek-v4-flash'))
+  assert.equal(recordPersonalUsage(records), 1)
+  assert.equal(recordPersonalUsage(records), 0)
+
+  const analytics = gatewayAnalytics({ from: '2026-09-02', to: '2026-09-02', grain: 'day', userId: String(uid) })
+  assert.equal(analytics.summary.actualTokens, 100)
+  assert.equal(analytics.summary.personalActualTokens, 100)
+  assert.equal(analytics.summary.platformActualTokens, 0)
+  assert.equal(analytics.summary.personalRequests, 1)
+  assert.equal(analytics.summary.chargedTokens, 0)
+  assert.equal(analytics.models[0].name, 'deepseek-official / deepseek-v4-flash')
+  assert.equal(analytics.rows[0].source, 'personal')
+
+  const response = await admin.inject({ url: '/api/gateway/analytics?from=2026-09-02&to=2026-09-02&grain=day', headers: { 'test-user': String(uid) } })
+  assert.equal(response.statusCode, 200)
+  const data = response.json()
+  assert.equal(data.summary.personalActualTokens, 100)
+  assert.equal(data.rows[0].source, 'personal')
+  assert.equal(data.rows[0].userId, undefined)
+  assert.ok(!response.body.includes('cacheReadTokens') && !response.body.includes('reasoningTokens'))
+  assert.equal(store.usage(uid, '2026-09-02').chargedTokens, 0)
 })

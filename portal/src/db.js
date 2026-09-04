@@ -61,6 +61,24 @@ CREATE TABLE IF NOT EXISTS auth_rate_limits (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(scope, subject_hash)
 );
+CREATE TABLE IF NOT EXISTS personal_usage_records (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  session_id TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  model_key TEXT NOT NULL,
+  day TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(user_id, session_id, event_seq)
+);
+CREATE INDEX IF NOT EXISTS personal_usage_user_day_idx ON personal_usage_records(user_id, day);
+CREATE INDEX IF NOT EXISTS personal_usage_day_model_idx ON personal_usage_records(day, user_id, model_key);
 `)
 
 db.pragma('secure_delete = ON')
@@ -236,6 +254,7 @@ export function deleteInstance(id) {
 export function deleteUser(id) {
   db.prepare('DELETE FROM instances WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id)
+  db.prepare('DELETE FROM personal_usage_records WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM users WHERE id = ?').run(id)
 }
 

@@ -66,12 +66,12 @@ function drawMyUsageTrend() {
 function myUsageTableRows() {
   const mode = myUsageEl('my-usage-table-mode').value, data = myUsageData
   const source = mode === 'model' ? data.models : mode === 'period' ? data.trend : data.rows
-  return source.map((row) => [mode === 'model' ? row.name : row.period, ...(mode === 'detail' ? [row.modelName] : []), row.inputTokens, row.outputTokens, row.actualTokens, row.chargedTokens, row.reservedTokens, row.requests, row.failedRequests, row.uncertainRequests])
+  return source.map((row) => [mode === 'model' ? row.name : row.period, ...(mode === 'detail' ? [row.modelName, row.source === 'personal' ? '个人模型' : '平台模型'] : []), row.inputTokens, row.outputTokens, row.actualTokens, row.chargedTokens, row.reservedTokens, row.requests, row.failedRequests, row.uncertainRequests])
 }
 
 function myUsageTableHeaders() {
   const mode = myUsageEl('my-usage-table-mode').value
-  return [mode === 'model' ? '模型' : '时间', ...(mode === 'detail' ? ['模型'] : []), '输入 Token', '输出 Token', '实际 Token', '额度扣减', '进行中预留', '请求', '明确失败', '待核实']
+  return [mode === 'model' ? '模型' : '时间', ...(mode === 'detail' ? ['模型', '来源'] : []), '输入 Token', '输出 Token', '实际 Token', '额度扣减', '进行中预留', '请求', '明确失败', '待核实']
 }
 
 function drawMyUsageTable() {
@@ -85,18 +85,18 @@ function drawMyUsageDashboard() {
   const data = myUsageData, summary = data.summary, previous = data.previous
   const cards = [
     ['实际 Token', exactTokens(summary.actualTokens), `输入 ${exactTokens(summary.inputTokens)} · 输出 ${exactTokens(summary.outputTokens)}`, myUsageChange(summary.actualTokens, previous.actualTokens)],
-    ['平台请求', exactTokens(summary.requests), `已结算 ${exactTokens(summary.completedRequests)} · 明确失败 ${exactTokens(summary.failedRequests)}`, myUsageChange(summary.requests, previous.requests)],
-    ['使用模型', exactTokens(summary.activeModels), `已选范围内 ${summary.requests} 次平台请求`, '仅展示我的平台模型'],
+    ['模型请求', exactTokens(summary.requests), `平台 ${exactTokens(summary.platformRequests)} · 个人 ${exactTokens(summary.personalRequests)}`, myUsageChange(summary.requests, previous.requests)],
+    ['使用模型', exactTokens(summary.activeModels), `已选范围内 ${summary.requests} 次模型请求`, '平台与个人模型'],
     ['日均实际 Token', exactTokens(Math.round(summary.dailyAverage)), `覆盖 ${data.days} 天，包含无调用日期`, `对比区间 ${previous.from} — ${previous.to}`],
   ]
   myUsageEl('my-usage-kpis').innerHTML = cards.map(([label, value, detail, comparison], index) => `<article class="usage-kpi ${index === 0 ? 'usage-kpi-primary' : ''}"><span>${label}</span><strong title="${value}">${value}</strong><small>${detail}</small><div class="usage-comparison">${comparison}</div></article>`).join('')
-  myUsageEl('my-usage-accounting').innerHTML = `<span>额度已扣减 <b>${exactTokens(summary.chargedTokens)}</b></span><span class="usage-warning">其中待核实 <b>${exactTokens(summary.uncertainTokens)}</b> · ${summary.uncertainRequests} 次</span><span>进行中预留 <b>${exactTokens(summary.reservedTokens)}</b> · ${summary.pendingRequests} 次</span><span>对比使用上个等长日期区间。</span>`
+  myUsageEl('my-usage-accounting').innerHTML = `<span>个人模型 <b>${exactTokens(summary.personalActualTokens)}</b> Token · ${summary.personalRequests} 次</span><span>平台额度已扣减 <b>${exactTokens(summary.chargedTokens)}</b></span><span class="usage-warning">其中待核实 <b>${exactTokens(summary.uncertainTokens)}</b> · ${summary.uncertainRequests} 次</span><span>进行中预留 <b>${exactTokens(summary.reservedTokens)}</b> · ${summary.pendingRequests} 次</span><span>对比使用上个等长日期区间。</span>`
   drawMyUsageTrend()
   const modelChart = myUsageChart('my-usage-models-chart', { tooltip: { trigger: 'item', renderMode: 'richText', confine: true, formatter: (p) => `${p.name}\n${exactTokens(p.value)} Token · ${p.percent}%` }, legend: { bottom: 0, top: 'auto', type: 'scroll', textStyle: { color: '#b8c6dc' } }, series: [{ type: 'pie', radius: ['43%', '68%'], center: ['50%', '43%'], label: { color: '#b8c6dc', formatter: '{d}%' }, labelLine: { length: 10 }, data: data.models.filter((model) => model.actualTokens > 0).map((model) => ({ name: model.name, value: model.actualTokens, modelId: model.id })) }] }, summary.actualTokens > 0)
   modelChart?.off('click'); modelChart?.on('click', (event) => { myUsageEl('my-gateway-usage-filter').elements.modelId.value = event.data.modelId; renderMyGatewayUsage() })
   const heat = new Map(data.heatmap.map((row) => [`${row.weekday}-${row.hour}`, row.actualTokens]))
   myUsageChart('my-usage-heatmap', { grid: { left: 42, right: 12, top: 10, bottom: 68 }, legend: { show: false }, xAxis: myUsageAxis('category', Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`)), yAxis: { ...myUsageAxis('category', ['周一', '周二', '周三', '周四', '周五', '周六', '周日']), inverse: true }, visualMap: { min: 0, max: Math.max(1, ...data.heatmap.map((row) => row.actualTokens)), calculable: false, orient: 'horizontal', bottom: 0, left: 'center', inRange: { color: ['#202b43', '#3e65b3', '#739bff', '#8ce8d0'] }, text: ['高', '低'], textStyle: { color: '#91a1bb' } }, tooltip: { position: 'top', renderMode: 'richText', confine: true, formatter: (p) => `${['周一', '周二', '周三', '周四', '周五', '周六', '周日'][p.value[1]]} ${String(p.value[0]).padStart(2, '0')}:00\n${exactTokens(p.value[2])} Token` }, series: [{ type: 'heatmap', data: Array.from({ length: 168 }, (_, i) => [i % 24, Math.floor(i / 24), heat.get(`${Math.floor(i / 24)}-${i % 24}`) ?? 0]), itemStyle: { borderWidth: 2, borderColor: '#151e2e', borderRadius: 3 }, emphasis: { itemStyle: { borderColor: '#d6e8ff' } } }] }, summary.requests > 0)
-  myUsageChart('my-usage-requests-chart', { xAxis: myUsageAxis('category', data.trend.map((row) => myUsagePeriodLabel(row.period))), yAxis: { ...myUsageAxis('value'), minInterval: 1 }, dataZoom: myUsageZoom(data.trend.length), grid: { left: 12, right: 12, top: 42, bottom: data.trend.length > 40 ? 42 : 24, containLabel: true }, series: [['completedRequests', '已结算', '#36d6ad'], ['failedRequests', '明确失败', '#f38aa8'], ['uncertainRequests', '待核实', '#f4ba68'], ['pendingRequests', '进行中', '#7199ff']].map(([key, name, color]) => ({ name, type: 'bar', stack: 'requests', barMaxWidth: 30, itemStyle: { color }, data: data.trend.map((row) => row[key]) })) }, summary.requests > 0)
+  myUsageChart('my-usage-requests-chart', { xAxis: myUsageAxis('category', data.trend.map((row) => myUsagePeriodLabel(row.period))), yAxis: { ...myUsageAxis('value'), minInterval: 1 }, dataZoom: myUsageZoom(data.trend.length), grid: { left: 12, right: 12, top: 42, bottom: data.trend.length > 40 ? 42 : 24, containLabel: true }, series: [['completedRequests', '已收到用量', '#36d6ad'], ['failedRequests', '明确失败', '#f38aa8'], ['uncertainRequests', '待核实', '#f4ba68'], ['pendingRequests', '进行中', '#7199ff']].map(([key, name, color]) => ({ name, type: 'bar', stack: 'requests', barMaxWidth: 30, itemStyle: { color }, data: data.trend.map((row) => row[key]) })) }, summary.requests > 0)
   drawMyUsageTable()
 }
 
@@ -115,7 +115,10 @@ async function renderMyGatewayUsage() {
     if (value && !data.options.models.some((model) => String(model.id) === value)) select.add(new Option(`未找到：${value}`, value))
     select.value = value
     myUsageEl('my-usage-dashboard').classList.remove('hidden')
-    myUsageEl('my-usage-query-status').textContent = `${data.from} — ${data.to} · 北京时间 · 按${myUsageGrains[data.grain]}汇总 · ${data.summary.requests ? '数据已更新' : '所选范围暂无平台调用'} · ${new Date(data.generatedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`
+    const sync = data.personalSync?.status === 'ok' && data.personalSync.added
+      ? ` · 已同步 ${data.personalSync.added} 条个人模型用量`
+      : data.personalSync?.status === 'unavailable' ? ' · 个人模型记录将在工作空间运行后同步' : ''
+    myUsageEl('my-usage-query-status').textContent = `${data.from} — ${data.to} · 北京时间 · 按${myUsageGrains[data.grain]}汇总 · ${data.summary.requests ? '数据已更新' : '所选范围暂无模型调用'}${sync} · ${new Date(data.generatedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`
     drawMyUsageDashboard(); myUsageEl('my-usage-export').disabled = data.rows.length === 0
   } catch (error) {
     if (sequence !== myUsageRequest) return

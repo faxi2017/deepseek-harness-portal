@@ -6,6 +6,7 @@ import { allModels, encrypt, getModel, publicModel, publicPolicy, savePolicy, sa
 import { syncModel, bifrost } from './bifrost.js'
 import { syncDsh } from './gateway-dsh.js'
 import { gatewayAnalytics, gatewayAnalyticsForUser } from './gateway-analytics.js'
+import { syncPersonalUsage } from './personal-usage.js'
 
 export function normalizeBaseUrl(value) {
   const url = new URL(value)
@@ -114,11 +115,12 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
     if (!user) return
     if (req.query.userId !== undefined) return reply.code(400).send({ error: '我的用量不支持用户筛选。' })
     try {
+      const personalSync = await syncPersonalUsage(user.id)
       const analytics = gatewayAnalyticsForUser(user.id, req.query)
       const policy = publicPolicy(user.id)
       const models = new Map(analytics.options.models.map((model) => [model.id, model]))
       for (const model of allModels()) if (policy.models.includes(model.id)) models.set(model.id, { id: model.id, name: model.name })
-      return { ...analytics, options: { models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)) } }
+      return { ...analytics, personalSync, options: { models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)) } }
     }
     catch (error) {
       if (/^(请选择|模型筛选)/.test(error.message)) return reply.code(400).send({ error: error.message })

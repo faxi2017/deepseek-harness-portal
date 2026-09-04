@@ -1,7 +1,11 @@
 import net from 'node:net'
 import http from 'node:http'
 import { config } from './config.js'
-import { db, getInstanceById, updateInstanceUnlessDeleting } from './db.js'
+import {
+  db, createDshRelease, createDshUpgrade, getDefaultDshRelease, getDshRelease, getDshUpgrade,
+  getDshReleaseByImage, getInstanceById, listDshUpgradeBackups, listInstancesWithUsers,
+  updateDshRelease, updateDshUpgrade, updateInstance, updateInstanceUnlessDeleting,
+} from './db.js'
 
 import { docker, inspectObject, missingObject, ensureNetwork, applyFirewall } from './docker.js'
 import {
@@ -10,6 +14,7 @@ import {
 } from './plugins.js'
 const runningCache = new Map()
 const lifecycleLocks = new Map()
+const scheduledUpgrades = new Set()
 const RUNNING_CACHE_TTL_MS = 2000
 
 const inspectPluginInventory = `const fs=require('fs');const path=require('path');
@@ -39,6 +44,16 @@ async function assertManagedHomeVolume(inst) {
   const volume = `${inst.container_name}-home`
   if (!(await inspectObject('volume', volume))) throw new Error('instance home volume is missing')
   return volume
+}
+
+async function assertManagedTenantVolumes(inst) {
+  const container = await inspectObject('container', inst.container_name)
+  if (container && container.Config?.Labels?.['dsh.portal.managed'] !== 'true') throw new Error('unmanaged container')
+  const volumes = [`${inst.container_name}-home`, `${inst.container_name}-workspace`]
+  for (const volume of volumes) {
+    if (!(await inspectObject('volume', volume))) throw new Error(`instance volume is missing: ${volume}`)
+  }
+  return volumes
 }
 
 async function scanPluginsUnlocked(inst) {
@@ -115,11 +130,11 @@ export function containerName(slug) {
   return `dsh-${slug}`
 }
 
-export async function ensureImage() {
+export async function ensureImage(image = config.image) {
   try {
-    if (!(await inspectObject('image', config.image))) throw new Error('missing image')
+    if (!(await inspectObject('image', image))) throw new Error('missing image')
   } catch {
-    throw new Error(`approved image "${config.image}" not found; run ./build-image.sh and configure its sha256 ID`)
+    throw new Error(`approved image "${image}" not found`)
   }
 }
 
@@ -131,11 +146,34 @@ export async function verifyDockerRuntime() {
     throw new Error('This Docker network isolation implementation requires a rootful Linux daemon or Docker Desktop')
   }
   await ensureImage()
+  const configuredRelease = getDshReleaseByImage(config.image)
+  const configuredImage = await inspectObject('image', config.image)
+  const configuredVersion = configuredImage?.Config?.Labels?.['dsh.portal.version']
+  if (configuredRelease && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(configuredVersion)) {
+    updateDshRelease(configuredRelease.id, { version: configuredVersion })
+  }
+  // An older deployment may have changed DSH_IMAGE before every tenant was
+  // reprovisioned. Record the image a live managed container actually uses so
+  // an upgrade rollback never assumes the newer configured image is its source.
+  for (const instance of listInstancesWithUsers()) {
+    const container = await inspectObject('container', instance.container_name)
+    if (!container || container.Config?.Labels?.['dsh.portal.managed'] !== 'true' || !/^sha256:[a-f0-9]{64}$/.test(container.Image ?? '')) continue
+    let release = getDshReleaseByImage(container.Image)
+    if (!release) {
+      const image = await inspectObject('image', container.Image)
+      const version = image?.Config?.Labels?.['dsh.portal.version']
+      release = createDshRelease({
+        version: /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version) ? version : '未识别的现有镜像',
+        imageId: container.Image,
+      })
+    }
+    if (instance.release_id !== release.id) updateInstance(instance.id, { release_id: release.id })
+  }
   const network = await ensureNetwork()
   await applyFirewall(network)
 }
 
-async function createContainerUnlocked({ slug, hostPort }) {
+async function createContainerUnlocked({ slug, hostPort, image = config.image }) {
   const name = containerName(slug)
   invalidateRunning(name)
   const args = [
@@ -159,14 +197,14 @@ async function createContainerUnlocked({ slug, hostPort }) {
     '--restart', 'unless-stopped',
   ]
   if (config.instanceReadOnlyRoot) args.push('--read-only')
-  args.push(config.image)
+  args.push(image)
   await docker(args)
   invalidateRunning(name)
 }
 
-export function createContainer({ slug, hostPort }) {
+export function createContainer({ slug, hostPort, image = config.image }) {
   const name = containerName(slug)
-  return withLifecycleLock(name, () => createContainerUnlocked({ slug, hostPort }))
+  return withLifecycleLock(name, () => createContainerUnlocked({ slug, hostPort, image }))
 }
 
 async function startContainerUnlocked(name) {
@@ -222,6 +260,233 @@ export function removeContainer(name) {
 /** Remove a stale container but keep its volumes (idempotent re-provision). */
 export function removeContainerKeepVolumes(name) {
   return withLifecycleLock(name, () => removeExistingContainerUnlocked(name))
+}
+
+function upgradeBackupNames(name, upgradeId) {
+  return {
+    home: `${name}-upgrade-${upgradeId}-home-backup`,
+    workspace: `${name}-upgrade-${upgradeId}-workspace-backup`,
+  }
+}
+
+function validUpgradeBackupName(name, volume) {
+  return typeof volume === 'string'
+    && volume.startsWith(`${name}-upgrade-`)
+    && /-(?:home|workspace)-backup$/.test(volume)
+}
+
+async function copyVolumeContents(source, target, image, { replace = false } = {}) {
+  if (!(await inspectObject('volume', source)) || !(await inspectObject('volume', target))) {
+    throw new Error('upgrade volume is missing')
+  }
+  const command = replace
+    ? 'set -e; find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar -C /source -cf - . | tar -C /target -xpf -'
+    : 'set -e; tar -C /source -cf - . | tar -C /target -xpf -'
+  await docker([
+    'run', '--rm', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
+    '--mount', `type=volume,src=${source},dst=/source,readonly`,
+    '--mount', `type=volume,src=${target},dst=/target`,
+    '--entrypoint', '/bin/bash', image, '-ec', command,
+  ], { timeout: Math.max(config.dockerCommandTimeoutMs, 120_000) })
+}
+
+async function createVolumeBackup(volumes, backups, image) {
+  const created = []
+  try {
+    for (const volume of Object.values(backups)) {
+      if (await inspectObject('volume', volume)) throw new Error('upgrade backup already exists')
+      await docker(['volume', 'create', '--label', 'dsh.portal.managed=true', '--label', 'dsh.portal.upgrade-backup=true', volume])
+      created.push(volume)
+    }
+    await copyVolumeContents(volumes[0], backups.home, image)
+    await copyVolumeContents(volumes[1], backups.workspace, image)
+  } catch (error) {
+    for (const volume of created) await docker(['volume', 'rm', volume]).catch(() => {})
+    throw error
+  }
+}
+
+async function restoreVolumeBackup(volumes, backups, image, containerName) {
+  if (!validUpgradeBackupName(containerName, backups.home) || !validUpgradeBackupName(containerName, backups.workspace)) {
+    throw new Error('invalid upgrade backup')
+  }
+  await copyVolumeContents(backups.home, volumes[0], image, { replace: true })
+  await copyVolumeContents(backups.workspace, volumes[1], image, { replace: true })
+}
+
+async function restorePreviousRelease(inst, previousRelease, volumes, backups, priorStatus) {
+  await removeExistingContainerUnlocked(inst.container_name)
+  await restoreVolumeBackup(volumes, backups, previousRelease.image_id, inst.container_name)
+  await createContainerUnlocked({ slug: inst.slug, hostPort: inst.host_port, image: previousRelease.image_id })
+  const healthy = await waitHealthy(inst.host_port, config.instanceStartTimeoutMs)
+  if (!healthy) {
+    await stopContainerUnlocked(inst.container_name).catch(() => {})
+    return false
+  }
+  if (priorStatus === 'stopped') await stopContainerUnlocked(inst.container_name)
+  return true
+}
+
+async function runDshUpgrade(upgradeId, { restoreFromUpgradeId = null } = {}) {
+  const initial = getDshUpgrade(upgradeId)
+  if (!initial) return
+  const instance = getInstanceById(initial.instance_id)
+  if (!instance || instance.status === 'deleting') {
+    updateDshUpgrade(upgradeId, { status: 'failed', finished_at: Date.now(), message: '实例不存在或正在删除，未执行升级。' })
+    return
+  }
+  const name = instance.container_name
+  return withLifecycleLock(name, async () => {
+    const current = getInstanceById(instance.id)
+    const upgrade = getDshUpgrade(upgradeId)
+    if (!current || !upgrade || current.status === 'deleting') {
+      updateDshUpgrade(upgradeId, { status: 'failed', finished_at: Date.now(), message: '实例不可用，未执行升级。' })
+      return
+    }
+    const previousRelease = getDshRelease(upgrade.from_release_id)
+    const targetRelease = getDshRelease(upgrade.to_release_id)
+    let priorStatus = current.status === 'stopped' ? 'stopped' : 'running'
+    let volumes
+    let backups
+    let wasRunning = false
+    let stoppedForBackup = false
+    let replacementStarted = false
+    try {
+      if (!previousRelease || !targetRelease) throw new Error('upgrade release is unavailable')
+      await ensureImage(previousRelease.image_id)
+      await ensureImage(targetRelease.image_id)
+      volumes = await assertManagedTenantVolumes(current)
+      const existing = await inspectObject('container', name)
+      wasRunning = Boolean(existing?.State?.Running)
+      priorStatus = wasRunning ? 'running' : 'stopped'
+      if (!updateInstanceUnlessDeleting(current.id, { status: 'upgrading', error: null })) throw new Error('instance deletion is in progress')
+      if (wasRunning) {
+        await stopContainerUnlocked(name)
+        stoppedForBackup = true
+      }
+      backups = upgradeBackupNames(name, upgrade.id)
+      await createVolumeBackup(volumes, backups, previousRelease.image_id)
+      updateDshUpgrade(upgrade.id, { backup_home_volume: backups.home, backup_workspace_volume: backups.workspace })
+
+      if (restoreFromUpgradeId !== null) {
+        const source = getDshUpgrade(restoreFromUpgradeId)
+        if (!source || source.instance_id !== current.id || !source.backup_home_volume || !source.backup_workspace_volume) {
+          throw new Error('rollback snapshot is unavailable')
+        }
+        if (!validUpgradeBackupName(name, source.backup_home_volume) || !validUpgradeBackupName(name, source.backup_workspace_volume)) {
+          throw new Error('rollback snapshot is invalid')
+        }
+        // Verify the requested historical snapshot before stopping the service.
+        if (!(await inspectObject('volume', source.backup_home_volume)) || !(await inspectObject('volume', source.backup_workspace_volume))) {
+          throw new Error('rollback snapshot volumes are missing')
+        }
+        updateDshUpgrade(upgrade.id, { message: '正在恢复所选升级前快照。' })
+      } else {
+        updateDshUpgrade(upgrade.id, { message: '备份完成，正在启动目标 DSH 版本。' })
+      }
+
+      replacementStarted = true
+      await removeExistingContainerUnlocked(name)
+      if (restoreFromUpgradeId !== null) {
+        const source = getDshUpgrade(restoreFromUpgradeId)
+        await restoreVolumeBackup(volumes, {
+          home: source.backup_home_volume,
+          workspace: source.backup_workspace_volume,
+        }, previousRelease.image_id, name)
+      }
+      await createContainerUnlocked({ slug: current.slug, hostPort: current.host_port, image: targetRelease.image_id })
+      if (!(await waitHealthy(current.host_port, config.instanceStartTimeoutMs))) throw new Error('candidate health check failed')
+      updateInstanceUnlessDeleting(current.id, {
+        release_id: targetRelease.id, status: 'running', error: null, last_active: Date.now(),
+      })
+      updateDshUpgrade(upgrade.id, {
+        status: 'completed', finished_at: Date.now(),
+        message: '升级完成，目标版本健康检查已通过；已保留升级前快照，可按需回退。',
+      })
+      if (config.gatewayEnabled) {
+        const { syncDsh } = await import('./gateway-dsh.js')
+        await syncDsh(current.user_id).catch(() => {})
+      }
+    } catch (error) {
+      console.error('[dsh upgrade]', error)
+      let restored = false
+      if (replacementStarted && volumes && backups && previousRelease) {
+        try {
+          restored = await restorePreviousRelease(current, previousRelease, volumes, backups, priorStatus)
+        } catch (rollbackError) {
+          console.error('[dsh upgrade rollback]', rollbackError)
+        }
+      }
+      if (restored) {
+        updateInstanceUnlessDeleting(current.id, {
+          release_id: previousRelease.id, status: priorStatus, error: null,
+          ...(priorStatus === 'running' ? { last_active: Date.now() } : {}),
+        })
+        updateDshUpgrade(upgrade.id, {
+          status: 'rolled_back', finished_at: Date.now(),
+          message: '目标版本未通过健康检查，已自动恢复到升级前版本和数据快照。',
+        })
+      } else if (!replacementStarted) {
+        let resumed = true
+        if (stoppedForBackup) {
+          await startContainerUnlocked(name).catch(() => { resumed = false })
+          if (resumed) resumed = await waitHealthy(current.host_port, config.instanceStartTimeoutMs)
+        }
+        updateInstanceUnlessDeleting(current.id, resumed
+          ? { status: priorStatus, error: null }
+          : { status: 'failed', error: 'DSH 升级前备份失败，且原服务未能恢复；请联系管理员。' })
+        updateDshUpgrade(upgrade.id, {
+          status: 'failed', finished_at: Date.now(),
+          message: resumed ? '升级前备份未完成，原版本和用户数据未被替换。' : '升级前备份未完成，原服务也未能恢复。',
+        })
+      } else {
+        updateInstanceUnlessDeleting(current.id, {
+          status: 'failed', error: 'DSH 升级或自动回退失败；请由管理员查看升级记录并执行回退。',
+        })
+        updateDshUpgrade(upgrade.id, {
+          status: 'failed', finished_at: Date.now(),
+          message: replacementStarted
+            ? '升级失败，且自动回退未完成；请从此记录执行回退。'
+            : '升级未开始切换，原服务未被替换。',
+        })
+      }
+    }
+  })
+}
+
+export function scheduleDshUpgrade(instanceId, targetReleaseId, { requestedBy, restoreFromUpgradeId = null } = {}) {
+  const instance = getInstanceById(instanceId)
+  if (!instance) throw new Error('instance not found')
+  if (!['running', 'stopped'].includes(instance.status)) throw new Error('instance is not ready for an upgrade')
+  const currentRelease = getDshRelease(instance.release_id) ?? getDefaultDshRelease()
+  const targetRelease = getDshRelease(targetReleaseId)
+  if (!currentRelease || !targetRelease) throw new Error('DSH release not found')
+  if (restoreFromUpgradeId === null && currentRelease.id === targetRelease.id) throw new Error('instance already uses this DSH release')
+  if (scheduledUpgrades.has(instance.container_name)) throw new Error('instance upgrade is already in progress')
+  const operation = restoreFromUpgradeId === null ? 'upgrade' : 'rollback'
+  const upgrade = createDshUpgrade({
+    instanceId: instance.id, fromReleaseId: currentRelease.id, toReleaseId: targetRelease.id,
+    operation, requestedBy,
+  })
+  scheduledUpgrades.add(instance.container_name)
+  void runDshUpgrade(upgrade.id, { restoreFromUpgradeId })
+    .catch((error) => console.error('[dsh upgrade unexpected]', error))
+    .finally(() => scheduledUpgrades.delete(instance.container_name))
+  return upgrade
+}
+
+export async function removeDshUpgradeBackups(instanceId) {
+  const instance = getInstanceById(instanceId)
+  if (!instance) return
+  return withLifecycleLock(instance.container_name, async () => {
+    for (const row of listDshUpgradeBackups(instance.id)) {
+      for (const volume of [row.backup_home_volume, row.backup_workspace_volume]) {
+        if (!validUpgradeBackupName(instance.container_name, volume)) throw new Error('invalid stored upgrade backup')
+        if (await inspectObject('volume', volume)) await docker(['volume', 'rm', volume])
+      }
+    }
+  })
 }
 
 export async function containerRunning(name, { fresh = false } = {}) {
@@ -312,8 +577,10 @@ export async function provision(instanceId, { setDefaultModel = false } = {}) {
     if (!inst || inst.status === 'deleting') return
     try {
       await removeExistingContainerUnlocked(name)
-      await ensureImage()
-      await createContainerUnlocked({ slug: inst.slug, hostPort: inst.host_port })
+      const release = getDshRelease(inst.release_id) ?? getDefaultDshRelease()
+      const image = release?.image_id ?? config.image
+      await ensureImage(image)
+      await createContainerUnlocked({ slug: inst.slug, hostPort: inst.host_port, image })
       const healthy = await waitHealthy(inst.host_port, config.instanceStartTimeoutMs)
 
       // Deletion may set its tombstone while health polling is in progress.

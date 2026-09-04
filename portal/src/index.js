@@ -7,11 +7,12 @@ import { dirname, join } from 'node:path'
 import { config, validateConfig } from './config.js'
 import {
   db, createInstanceRow, createUser, deleteAllSessionsForUser, deleteInstance,
-  deleteUser, ensureAdmin, getInstanceById, getInstanceByUserId,
-  getInstanceBySlug, getInviteCode, getUserById,
+  deleteUser, ensureAdmin, getDshRelease, getDshUpgrade, getInstanceById, getInstanceByUserId,
+  getInstanceBySlug, getInviteCode, getUserById, listDshReleases, listDshReleaseBuilds, listDshUpgrades,
   getUserByUsername, listInstancesWithUsers, listUsers, registrationEnabled,
-  purgeExpiredSessions, setInviteCode, setSetting, setUserPassword,
-  sessionForToken, updateInstance, updateInstanceUnlessDeleting, updateUser, userForSession,
+  purgeExpiredSessions, recoverInterruptedDshReleaseBuilds, recoverInterruptedDshUpgrades,
+  setInviteCode, setSetting, setUserPassword, sessionForToken, updateDshRelease,
+  updateInstance, updateInstanceUnlessDeleting, updateUser, userForSession,
 } from './db.js'
 import {
   createSession, destroySession, hashPassword, LEGACY_SESSION_COOKIES,
@@ -53,6 +54,8 @@ purgeExpiredSessions()
 ensureAdmin()
 setupProxy(fastify)
 recoverPluginJobs()
+recoverInterruptedDshReleaseBuilds()
+recoverInterruptedDshUpgrades()
 
 // Re-queue instances left mid-provisioning by a previous process exit.
 for (const inst of listInstancesWithUsers()) {
@@ -79,6 +82,16 @@ fastify.addHook('onSend', async (req, reply) => {
 // ---- helpers ---------------------------------------------------------------
 
 const publicUser = (u) => (u ? { id: u.id, username: u.username, name: u.name, role: u.role } : null)
+const publicDshRelease = (release) => (release ? {
+  id: release.id, version: release.version, imageId: release.image_id,
+  isDefault: Boolean(release.is_default), selfService: Boolean(release.self_service), createdAt: release.created_at,
+} : null)
+const publicDshUpgrade = (upgrade) => ({
+  id: upgrade.id, fromReleaseId: upgrade.from_release_id, toReleaseId: upgrade.to_release_id,
+  fromVersion: upgrade.from_version ?? '未知版本', toVersion: upgrade.to_version ?? '未知版本',
+  operation: upgrade.operation, status: upgrade.status, createdAt: upgrade.created_at,
+  finishedAt: upgrade.finished_at, message: upgrade.message,
+})
 
 function setSessionCookie(reply, token) {
   reply.setCookie(SESSION_COOKIE, token, {
@@ -355,7 +368,12 @@ fastify.get('/api/instance', async (req, reply) => {
   const user = requireUser(req, reply)
   if (!user) return
   const instance = getInstanceByUserId(user.id)
-  return { instance: instance ? await withLiveState(instance) : null }
+  if (!instance) return { instance: null, releases: [], upgrades: [] }
+  return {
+    instance: await withLiveState(instance),
+    releases: listDshReleases().filter((release) => release.self_service).map(publicDshRelease),
+    upgrades: listDshUpgrades(instance.id).map(publicDshUpgrade),
+  }
 })
 
 fastify.post('/api/instance/start', async (req, reply) => {
@@ -365,6 +383,7 @@ fastify.post('/api/instance/start', async (req, reply) => {
   if (!inst) return reply.code(404).send({ error: 'no instance' })
   if (inst.status === 'failed') return reply.code(400).send({ error: 'instance failed; contact admin' })
   if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await startContainer(inst.container_name)
   await waitUntilRunning(inst)
   updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
@@ -377,6 +396,7 @@ fastify.post('/api/instance/stop', async (req, reply) => {
   const inst = getInstanceByUserId(user.id)
   if (!inst) return reply.code(404).send({ error: 'no instance' })
   if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await stopContainer(inst.container_name)
   updateInstanceUnlessDeleting(inst.id, { status: 'stopped', error: null })
   return { instance: getInstanceByUserId(user.id) }
@@ -388,10 +408,51 @@ fastify.post('/api/instance/restart', async (req, reply) => {
   const inst = getInstanceByUserId(user.id)
   if (!inst) return reply.code(404).send({ error: 'no instance' })
   if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await restartContainer(inst.container_name)
   await waitUntilRunning(inst)
   updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
   return { instance: getInstanceByUserId(user.id) }
+})
+
+fastify.post('/api/instance/dsh-upgrade', async (req, reply) => {
+  const user = requireUser(req, reply)
+  if (!user) return
+  const instance = getInstanceByUserId(user.id)
+  const release = getDshRelease(Number(req.body?.releaseId))
+  if (!instance) return reply.code(404).send({ error: 'no instance' })
+  if (!release || !release.self_service) return reply.code(400).send({ error: 'DSH release is not available for self-service' })
+  try {
+    const { scheduleDshUpgrade } = await import('./orchestrator.js')
+    const upgrade = scheduleDshUpgrade(instance.id, release.id, { requestedBy: user.id })
+    closeUserSockets(user.id)
+    return { ok: true, upgrade: publicDshUpgrade(getDshUpgrade(upgrade.id)) }
+  } catch (error) {
+    return reply.code(409).send({ error: 'DSH upgrade could not be started' })
+  }
+})
+
+fastify.post('/api/instance/dsh-rollbacks/:upgradeId', async (req, reply) => {
+  const user = requireUser(req, reply)
+  if (!user) return
+  const instance = getInstanceByUserId(user.id)
+  const snapshot = getDshUpgrade(Number(req.params.upgradeId))
+  if (!instance) return reply.code(404).send({ error: 'no instance' })
+  if (!snapshot || snapshot.instance_id !== instance.id || !snapshot.backup_home_volume || !snapshot.backup_workspace_volume) {
+    return reply.code(404).send({ error: 'DSH rollback snapshot not found' })
+  }
+  const release = getDshRelease(snapshot.from_release_id)
+  if (!release?.self_service) return reply.code(400).send({ error: 'DSH release is not available for self-service' })
+  try {
+    const { scheduleDshUpgrade } = await import('./orchestrator.js')
+    const upgrade = scheduleDshUpgrade(instance.id, snapshot.from_release_id, {
+      requestedBy: user.id, restoreFromUpgradeId: snapshot.id,
+    })
+    closeUserSockets(user.id)
+    return { ok: true, upgrade: publicDshUpgrade(getDshUpgrade(upgrade.id)) }
+  } catch {
+    return reply.code(409).send({ error: 'DSH rollback could not be started' })
+  }
 })
 
 // ---- admin: settings -------------------------------------------------------
@@ -416,6 +477,52 @@ fastify.post('/api/admin/settings', async (req, reply) => {
     inviteCode: getInviteCode(),
     registrationEnabled: registrationEnabled(),
   }
+})
+
+// ---- admin: DSH releases --------------------------------------------------
+
+fastify.get('/api/admin/dsh/releases', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return
+  return {
+    releases: listDshReleases().map(publicDshRelease),
+    builds: listDshReleaseBuilds().map((build) => ({
+      id: build.id, requestedVersion: build.requested_version, status: build.status,
+      releaseId: build.release_id, createdAt: build.created_at, finishedAt: build.finished_at,
+      message: build.message,
+    })),
+  }
+})
+
+fastify.post('/api/admin/dsh/releases/build', async (req, reply) => {
+  const admin = requireAdmin(req, reply)
+  if (!admin) return
+  const version = String(req.body?.version ?? '').trim()
+  try {
+    const { queueDshReleaseBuild } = await import('./dsh-release-manager.js')
+    const build = queueDshReleaseBuild({ version, requestedBy: admin.id })
+    return { ok: true, build: { id: build.id, status: build.status, requestedVersion: build.requested_version } }
+  } catch (error) {
+    return reply.code(409).send({ error: 'DSH image build could not be started' })
+  }
+})
+
+fastify.post('/api/admin/dsh/releases/:id', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return
+  const release = getDshRelease(Number(req.params.id))
+  if (!release) return reply.code(404).send({ error: 'DSH release not found' })
+  const fields = {}
+  if (req.body?.isDefault !== undefined) {
+    if (typeof req.body.isDefault !== 'boolean') return reply.code(400).send({ error: 'invalid DSH release settings' })
+    if (!req.body.isDefault && release.is_default) return reply.code(400).send({ error: 'a default DSH release is required' })
+    fields.is_default = req.body.isDefault ? 1 : 0
+  }
+  if (req.body?.selfService !== undefined) {
+    if (typeof req.body.selfService !== 'boolean') return reply.code(400).send({ error: 'invalid DSH release settings' })
+    fields.self_service = req.body.selfService ? 1 : 0
+  }
+  if (Object.keys(fields).length === 0) return reply.code(400).send({ error: 'invalid DSH release settings' })
+  updateDshRelease(release.id, fields)
+  return { release: publicDshRelease(getDshRelease(release.id)) }
 })
 
 // ---- admin: users + instances ---------------------------------------------
@@ -452,6 +559,8 @@ fastify.post('/api/admin/users/:id/delete', async (req, reply) => {
     updateInstance(inst.id, { status: 'deleting', error: null })
     try {
       await removeContainer(inst.container_name)
+      const { removeDshUpgradeBackups } = await import('./orchestrator.js')
+      await removeDshUpgradeBackups(inst.id)
     } catch (error) {
       updateInstance(inst.id, { status: 'deleting', error: 'deletion failed; retry the operation' })
       req.log.error(error)
@@ -474,6 +583,7 @@ fastify.post('/api/admin/instances/:id/start', async (req, reply) => {
   const inst = getInstanceById(Number(req.params.id))
   if (!inst) return reply.code(404).send({ error: 'not found' })
   if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await startContainer(inst.container_name)
   await waitUntilRunning(inst)
   updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
@@ -485,6 +595,7 @@ fastify.post('/api/admin/instances/:id/stop', async (req, reply) => {
   const inst = getInstanceById(Number(req.params.id))
   if (!inst) return reply.code(404).send({ error: 'not found' })
   if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await stopContainer(inst.container_name)
   updateInstanceUnlessDeleting(inst.id, { status: 'stopped', error: null })
   return { ok: true }
@@ -495,6 +606,7 @@ fastify.post('/api/admin/instances/:id/restart', async (req, reply) => {
   const inst = getInstanceById(Number(req.params.id))
   if (!inst) return reply.code(404).send({ error: 'not found' })
   if (inst.status === 'deleting') return reply.code(409).send({ error: 'instance deletion is in progress' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await restartContainer(inst.container_name)
   await waitUntilRunning(inst)
   updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
@@ -508,6 +620,8 @@ fastify.post('/api/admin/instances/:id/delete', async (req, reply) => {
   updateInstance(inst.id, { status: 'deleting', error: null })
   try {
     await removeContainer(inst.container_name)
+    const { removeDshUpgradeBackups } = await import('./orchestrator.js')
+    await removeDshUpgradeBackups(inst.id)
   } catch (error) {
     updateInstance(inst.id, { status: 'deleting', error: 'deletion failed; retry the operation' })
     req.log.error(error)
@@ -521,11 +635,48 @@ fastify.post('/api/admin/instances/:id/reprovision', async (req, reply) => {
   if (!requireAdmin(req, reply)) return
   const inst = getInstanceById(Number(req.params.id))
   if (!inst) return reply.code(404).send({ error: 'not found' })
+  if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   if (!updateInstanceUnlessDeleting(inst.id, { status: 'provisioning', error: null })) {
     return reply.code(409).send({ error: 'instance deletion is in progress' })
   }
   provision(inst.id).catch((err) => console.error('[provision]', err))
   return { ok: true }
+})
+
+fastify.post('/api/admin/instances/:id/dsh-upgrade', async (req, reply) => {
+  const admin = requireAdmin(req, reply)
+  if (!admin) return
+  const inst = getInstanceById(Number(req.params.id))
+  const release = getDshRelease(Number(req.body?.releaseId))
+  if (!inst || !release) return reply.code(404).send({ error: 'DSH release not found' })
+  try {
+    const { scheduleDshUpgrade } = await import('./orchestrator.js')
+    const upgrade = scheduleDshUpgrade(inst.id, release.id, { requestedBy: admin.id })
+    closeUserSockets(inst.user_id)
+    return { ok: true, upgrade: publicDshUpgrade(getDshUpgrade(upgrade.id)) }
+  } catch {
+    return reply.code(409).send({ error: 'DSH upgrade could not be started' })
+  }
+})
+
+fastify.post('/api/admin/instances/:id/dsh-rollbacks/:upgradeId', async (req, reply) => {
+  const admin = requireAdmin(req, reply)
+  if (!admin) return
+  const inst = getInstanceById(Number(req.params.id))
+  const snapshot = getDshUpgrade(Number(req.params.upgradeId))
+  if (!inst || !snapshot || snapshot.instance_id !== inst.id || !snapshot.backup_home_volume || !snapshot.backup_workspace_volume) {
+    return reply.code(404).send({ error: 'DSH rollback snapshot not found' })
+  }
+  try {
+    const { scheduleDshUpgrade } = await import('./orchestrator.js')
+    const upgrade = scheduleDshUpgrade(inst.id, snapshot.from_release_id, {
+      requestedBy: admin.id, restoreFromUpgradeId: snapshot.id,
+    })
+    closeUserSockets(inst.user_id)
+    return { ok: true, upgrade: publicDshUpgrade(getDshUpgrade(upgrade.id)) }
+  } catch {
+    return reply.code(409).send({ error: 'DSH rollback could not be started' })
+  }
 })
 
 fastify.get('/api/admin/instances/:id/logs', async (req, reply) => {
@@ -561,7 +712,10 @@ fastify.get('/api/config', async () => ({
 
 async function withLiveState(inst) {
   const live = await containerRunning(inst.container_name)
-  return { ...inst, live, url: instanceUrl(inst) }
+  return {
+    ...inst, live, url: instanceUrl(inst), dshRelease: publicDshRelease(getDshRelease(inst.release_id)),
+    dshUpgrades: listDshUpgrades(inst.id).map(publicDshUpgrade),
+  }
 }
 
 async function waitUntilRunning(inst) {

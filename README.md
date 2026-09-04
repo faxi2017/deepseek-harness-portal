@@ -51,7 +51,7 @@ notepad .env
 
 基础镜像下载使用 Docker Engine 的 `registry-mirrors`。镜像内部 apt 默认阿里云 Debian 镜像（保留 Debian 签名验证），npm 默认 `https://registry.npmmirror.com`。构建脚本仍从官方 npm 查询最新版本，镜像若尚未同步该版本会报错，不静默降级。
 
-可通过 `NPM_REGISTRY` 和 `DEBIAN_MIRROR` 环境变量覆盖构建下载源，详见部署文档。DSH 不在用户每次启动时自动在线升级。构建得到新镜像后，修改 `.env`，重启 Portal，再由管理员重建指定实例才能升级已有用户。
+可通过 `NPM_REGISTRY` 和 `DEBIAN_MIRROR` 环境变量覆盖构建下载源，详见部署文档。DSH 不会在用户容器内在线升级：管理员在“DSH 版本”页构建固定镜像、选择测试实例灰度升级。每次切换会先备份用户的 home 与 workspace 卷，目标版本健康检查失败会自动恢复旧镜像和数据；成功记录也保留快照供手动回退。
 
 ## 数据和权限
 

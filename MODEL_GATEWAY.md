@@ -68,7 +68,7 @@ node --env-file=.env scripts/start-gateway.mjs
 - `portal/data/bifrost/`：Bifrost 配置、加密数据库、启动环境；仅服务端使用。不要提交此目录。管理员凭证派生自根密钥，Bifrost 内部虚拟密钥不会进入用户 DSH。
 - 全部新增记录独立于 DSH 镜像。下发通过当前官方 `settings.describe` / `settings.mutate` / `credentials.set` 接口，仅维护 `llm-pi-ai.providers.portal-gateway` 和 `PORTAL_GATEWAY_API_KEY`。使用版本校验和路径级更新，保留个人模型、密钥、插件配置。
 - 正常 Portal 启动和已配置用户的 DSH 重建，不反复覆盖用户的模型选择。更改权限即时生效；更改 DSH 列表/名称等展示配置时手动重新下发。
-- DSH 升级仍按原来的构建镜像 → 修改 `DSH_IMAGE` → 重建实例流程，保留两个用户卷。已测试同镜像重建的持久化路径；未来 DSH 版本的 API 和插件兼容性需灰度验证，不能由本次测试保证。下发失败会显示错误，实例保持可用。
+- DSH 升级在 Portal 的“DSH 版本”页构建固定镜像并切换指定实例。每次切换先备份两个用户卷，目标镜像健康检查失败会自动恢复旧镜像和备份；成功记录可手动回退。未来 DSH 版本的 API 和插件兼容性仍需灰度验证，不能由本次测试保证。下发失败会显示错误，实例保持可用。
 - Bifrost 升级独立进行，不跟随用户 DSH 升级。先备份 `portal/data`（包含根密钥、Portal DB 和 Bifrost DB）与租户卷，再验证目标版本。本次脚本遇到已有网关容器仅启动，不隐式替换镜像或删除网关数据。
 - 继续只运行一个 Portal 进程；跨进程/多副本部署、网关集群、货币计费不在本次实现范围。
 

@@ -68,6 +68,9 @@ export const config = {
   bifrostUrl: process.env.BIFROST_URL ?? 'http://127.0.0.1:14000',
   image: process.env.DSH_IMAGE ?? '',
   dockerCommandTimeoutMs: num('DOCKER_COMMAND_TIMEOUT_MS', 60 * 1000),
+  dshBuildTimeoutMs: num('DSH_BUILD_TIMEOUT_MS', 15 * 60 * 1000),
+  dshNpmRegistry: process.env.NPM_REGISTRY ?? '',
+  dshDebianMirror: process.env.DEBIAN_MIRROR ?? '',
   instanceRouting: process.env.INSTANCE_ROUTING ?? 'ports',
   instancePortStart: num('INSTANCE_PORT_START', 7001),
 
@@ -144,6 +147,7 @@ export function validateConfig() {
     ['AUTH_RATE_BLOCK_MS', config.authRateBlockMs],
     ['OTP_RESEND_COOLDOWN_MS', config.otpResendCooldownMs],
     ['DOCKER_COMMAND_TIMEOUT_MS', config.dockerCommandTimeoutMs],
+    ['DSH_BUILD_TIMEOUT_MS', config.dshBuildTimeoutMs],
   ]
   for (const [name, value] of positiveMs) {
     if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`)
@@ -154,6 +158,14 @@ export function validateConfig() {
   if (!config.image) throw new Error('DSH_IMAGE must be configured')
   if (config.environment === 'production' && !/^sha256:[a-f0-9]{64}$/.test(config.image)) {
     throw new Error('production DSH_IMAGE must be an immutable sha256 image ID')
+  }
+  for (const [name, value] of [['NPM_REGISTRY', config.dshNpmRegistry], ['DEBIAN_MIRROR', config.dshDebianMirror]]) {
+    if (!value) continue
+    let url
+    try { url = new URL(value) } catch { throw new Error(`${name} must be an absolute http(s) URL`) }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      throw new Error(`${name} must be an absolute http(s) URL without credentials`)
+    }
   }
   const cpus = Number(config.instanceCpus)
   const memory = resourceBytes(config.instanceMemory)

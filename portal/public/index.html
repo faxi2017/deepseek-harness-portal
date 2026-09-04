@@ -127,6 +127,9 @@
         <button class="nav-item" data-tab="plugins">
           <span class="nav-icon" data-icon="sliders"></span> 默认插件
         </button>
+        <button class="nav-item" data-tab="dsh-versions">
+          <span class="nav-icon" data-icon="refresh"></span> DSH 版本
+        </button>
       </nav>
       <nav class="nav hidden" id="user-nav" aria-label="个人功能">
         <button class="nav-item active" data-user-tab="workspace" type="button">
@@ -185,6 +188,9 @@
           <button class="nav-item" data-tab="plugins">
             <span class="nav-icon" data-icon="sliders"></span> 默认插件
           </button>
+          <button class="nav-item" data-tab="dsh-versions">
+            <span class="nav-icon" data-icon="refresh"></span> DSH 版本
+          </button>
         </div>
         <div class="mobile-user-nav hidden" id="mobile-user-nav">
           <button class="nav-item active" data-user-tab="workspace" type="button">
@@ -225,6 +231,7 @@
               <div class="kv-grid">
                 <div class="kv"><span class="k">请求次数</span><span class="v" id="i-requests">0</span></div>
                 <div class="kv"><span class="k">最近活跃</span><span class="v" id="i-active">—</span></div>
+                <div class="kv"><span class="k">DSH 版本</span><span class="v" id="i-dsh-version">—</span></div>
               </div>
               <p id="i-error" class="form-msg err"></p>
               <div class="actions">
@@ -233,6 +240,9 @@
                 </a>
                 <button id="i-restart" class="btn btn-ghost" type="button">
                   <span class="nav-icon" data-icon="refresh"></span> 重启服务
+                </button>
+                <button id="i-dsh-upgrade" class="btn btn-ghost" type="button">
+                  <span class="nav-icon" data-icon="refresh"></span> DSH 版本
                 </button>
               </div>
               <p class="hint">安装要求重启的插件后，可点击“重启服务”使其生效；重启会短暂中断当前连接，但不会删除文件、插件或配置。可在 DSH“设置 → 模型”添加自己的模型和密钥。个人模型与平台模型并存，个人模型不占平台额度。实例空闲时会自动停止，再次进入时自动启动。</p>
@@ -325,6 +335,18 @@
             <p class="hint">批量操作使用已保存的命令，逐个安装，成功后自动重启，会中断当前对话连接；停止的实例也会启动。用户的模型配置、工作文件和其他插件保留。单个插件安装最多等待 5 分钟，失败可单独重试。</p>
             <p id="plugins-status" role="status" class="hint"></p>
             <div id="plugins-instances"></div>
+          </div>
+          <div class="panel hidden" id="panel-dsh-versions">
+            <div class="panel-head"><div><h2>DSH 版本管理</h2><p class="hint">先构建受控镜像，再灰度升级；升级前自动备份 home 和 workspace，失败会自动回退。</p></div></div>
+            <form id="dsh-build-form" class="form form-narrow">
+              <div class="field"><label for="dsh-build-version">目标版本</label><input id="dsh-build-version" name="version" value="latest" placeholder="latest 或 例如 0.1.1" pattern="(?:latest|[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?)" required /></div>
+              <button class="btn btn-primary" type="submit">构建受控镜像</button>
+              <p class="hint">构建使用项目已审查的镜像配方安装指定 DSH 版本；不在用户容器内执行 npm 更新。构建完成后不会自动影响任何实例。</p>
+            </form>
+            <p id="dsh-build-status" class="hint" role="status"></p>
+            <div id="dsh-releases"></div>
+            <h3>最近构建</h3>
+            <div id="dsh-builds"></div>
           </div>
           <div class="panel hidden" id="panel-gateway">
             <div class="panel-head"><h2>模型网关</h2><span class="hint">统一配置 · 用量洞察</span></div>

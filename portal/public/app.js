@@ -7,6 +7,10 @@ let csrfToken = ''
 let authMode = 'login' // 'login' | 'register'
 let instancesCache = []
 let usersCache = []
+let dshReleasesCache = []
+let myDshReleases = []
+let myDshUpgrades = []
+let myInstance = null
 let cfg = { domain: '', instanceDomain: '', registrationEnabled: true, inviteCodeRequired: false }
 
 const THEME_STORAGE_KEY = 'dsh-portal-theme'
@@ -104,6 +108,17 @@ const ERROR_MESSAGES = {
   'no instance': '暂未创建实例，请联系管理员',
   'instance failed; contact admin': '实例启动失败，请联系管理员',
   'instance deletion is in progress': '实例正在删除，请稍后再试',
+  'instance upgrade is in progress': 'DSH 正在升级或回退，请稍后再试',
+  'instance is not ready for an upgrade': '实例当前状态无法升级，请先恢复为运行中或已停止',
+  'instance upgrade is already in progress': '该实例已有升级或回退任务在执行',
+  'DSH release is not available for self-service': '此 DSH 版本未开放个人自助升级',
+  'DSH release not found': 'DSH 版本不存在或已不可用',
+  'DSH rollback snapshot not found': '找不到可用的 DSH 回退快照',
+  'DSH upgrade could not be started': '无法启动 DSH 升级，请稍后重试',
+  'DSH rollback could not be started': '无法启动 DSH 回退，请稍后重试',
+  'DSH image build could not be started': '无法开始构建 DSH 镜像，请检查是否已有构建任务',
+  'invalid DSH release settings': 'DSH 版本设置无效',
+  'a default DSH release is required': '必须保留一个新用户默认 DSH 版本',
   'registrationEnabled must be boolean': '注册设置无效，请刷新页面后重新设置',
   'not found': '该用户或实例不存在，请刷新页面',
   'cannot delete an admin account': '不能删除管理员账号',
@@ -207,7 +222,7 @@ function confirmModal(title, message, actionLabel = '删除', danger = true) {
 }
 
 // ---- formatting ----
-const STATUS_LABELS = { running: '运行中', stopped: '已停止', provisioning: '创建中', failed: '启动失败', deleting: '删除中' }
+const STATUS_LABELS = { running: '运行中', stopped: '已停止', provisioning: '创建中', upgrading: '升级 / 回退中', failed: '启动失败', deleting: '删除中' }
 function statusBadge(status) {
   const label = STATUS_LABELS[status] || '未知状态'
   return `<span class="badge badge-${status}"><span class="dot"></span>${label}</span>`
@@ -257,13 +272,15 @@ function setAdminTab(tab) {
   $('#panel-settings').classList.toggle('hidden', tab !== 'settings')
   $('#panel-gateway').classList.toggle('hidden', tab !== 'gateway')
   $('#panel-plugins').classList.toggle('hidden', tab !== 'plugins')
-  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', plugins: '默认插件' }
+  $('#panel-dsh-versions').classList.toggle('hidden', tab !== 'dsh-versions')
+  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', plugins: '默认插件', 'dsh-versions': 'DSH 版本管理' }
   $('#topbar-title').textContent = titles[tab] || '概览'
   if (tab === 'instances') renderInstances()
   else if (tab === 'users') renderUsers()
   else if (tab === 'settings') renderSettings()
   else if (tab === 'gateway') renderGateway()
   else if (tab === 'plugins') renderPlugins(true)
+  else if (tab === 'dsh-versions') renderDshVersions()
 }
 
 function setUserTab(tab) {
@@ -379,14 +396,16 @@ async function openProfile() {
 // ---- user view ----
 async function renderUser() {
   try {
-    const { instance } = await api('/api/instance')
+    const { instance, releases = [], upgrades = [] } = await api('/api/instance')
     const body = $('#instance-body'), empty = $('#instance-empty')
     if (!instance) {
+      myInstance = null
       body.classList.add('hidden'); empty.classList.remove('hidden')
       empty.textContent = '暂未创建实例，请联系管理员。'
       return
     }
     empty.classList.add('hidden'); body.classList.remove('hidden')
+    myInstance = instance
     $('#i-slug').textContent = instance.slug
     $('#i-status').innerHTML = statusBadge(instance.status)
     const url = instanceUrl(instance)
@@ -395,6 +414,10 @@ async function renderUser() {
     $('#i-launch').href = url
     $('#i-requests').textContent = fmtNum(instance.request_count ?? 0)
     $('#i-active').textContent = relTime(instance.last_active)
+    myDshReleases = releases
+    myDshUpgrades = upgrades
+    $('#i-dsh-version').textContent = instance.dshRelease?.version ?? '未识别'
+    $('#i-dsh-upgrade').disabled = instance.status === 'upgrading'
     $('#i-error').textContent = instance.error ? errorMessage(instance.error) : ''
     $('#i-error').style.display = instance.error ? '' : 'none'
     renderMyGateway()
@@ -476,6 +499,7 @@ function drawInstances() {
         <td class="cell-mono">${escapeHtml(i.slug)}</td>
         <td>${escapeHtml(id)}</td>
         <td>${statusBadge(i.status)}</td>
+        <td>${escapeHtml(i.dshRelease?.version ?? '未识别')}</td>
         <td class="cell-mono">${i.host_port}</td>
         <td>${fmtNum(i.request_count ?? 0)}</td>
         <td>${relTime(i.last_active)}</td>
@@ -484,13 +508,14 @@ function drawInstances() {
           <button class="btn btn-ghost btn-sm" data-act="logs" data-id="${i.id}">${icon('terminal', 14)} 日志</button>
           <button class="btn btn-ghost btn-sm" data-act="plugins" data-id="${i.id}">${icon('sliders', 14)} 插件</button>
           <button class="btn btn-ghost btn-sm" data-act="restart" data-id="${i.id}">${icon('refresh', 14)} 重启服务</button>
+          <button class="btn btn-ghost btn-sm" data-act="dsh" data-id="${i.id}" ${i.status === 'upgrading' ? 'disabled' : ''}>${icon('refresh', 14)} DSH 版本</button>
           <button class="btn btn-ghost btn-sm" data-act="reprovision" data-id="${i.id}" title="删除旧容器并按当前镜像新建；用户数据卷会保留。">${icon('refresh', 14)} 重建容器</button>
           <button class="btn btn-danger btn-sm" data-act="delete" data-id="${i.id}">${icon('trash', 14)} 删除</button>
         </div></td>
       </tr>`
     }).join('')
   $('#instances-table').innerHTML = rows
-    ? `<div class="table-wrap"><table><thead><tr><th>实例</th><th>所属用户</th><th>状态</th><th>内部端口</th><th>请求次数</th><th>最近活跃</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="table-wrap"><table><thead><tr><th>实例</th><th>所属用户</th><th>状态</th><th>DSH 版本</th><th>内部端口</th><th>请求次数</th><th>最近活跃</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<p class="empty">暂无符合条件的实例。</p>`
 }
 
@@ -572,6 +597,11 @@ $('#instances-table').addEventListener('click', async (e) => {
       openPluginRecovery(instance)
       return
     }
+    if (act === 'dsh') {
+      const instance = instancesCache.find((row) => String(row.id) === id)
+      await openDshVersionDialog(instance, { admin: true })
+      return
+    }
     if (act === 'delete') {
       const ok = await confirmModal('删除实例', '确定删除此实例及其全部数据吗？此操作无法撤销。')
       if (!ok) return
@@ -650,6 +680,127 @@ $('#users-table').addEventListener('click', async (e) => {
 $('#search-instances').addEventListener('input', drawInstances)
 $('#search-users').addEventListener('input', drawUsers)
 
+// ---- DSH versions ---------------------------------------------------------
+function dshVersionLabel(release) {
+  return release?.version || '未识别版本'
+}
+
+function dshUpgradeHistoryHtml(upgrades, admin, selfServiceReleaseIds = new Set()) {
+  if (!upgrades?.length) return '<p class="hint">暂无升级记录。</p>'
+  const rows = upgrades.map((upgrade) => `<tr>
+    <td>${escapeHtml(upgrade.operation === 'rollback' ? '回退' : '升级')}</td>
+    <td>${escapeHtml(upgrade.fromVersion)} → ${escapeHtml(upgrade.toVersion)}</td>
+    <td>${escapeHtml({ running: '进行中', completed: '已完成', rolled_back: '已自动回退', failed: '失败', interrupted: '已中断' }[upgrade.status] || upgrade.status)}</td>
+    <td>${fmtDate(upgrade.createdAt)}</td>
+    <td>${upgrade.message ? escapeHtml(upgrade.message) : '—'}</td>
+    <td>${admin || selfServiceReleaseIds.has(upgrade.fromReleaseId) ? `<button class="btn btn-ghost btn-sm" data-dsh-rollback="${upgrade.id}">${admin ? '回退到此快照' : '回退'}</button>` : '仅管理员可回退'}</td>
+  </tr>`).join('')
+  return `<div class="table-wrap"><table><thead><tr><th>操作</th><th>版本</th><th>结果</th><th>时间</th><th>说明</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+}
+
+async function openDshVersionDialog(instance, { admin = false } = {}) {
+  if (!instance) return
+  let releases = admin ? dshReleasesCache : myDshReleases
+  if (admin) {
+    const data = await api('/api/admin/dsh/releases')
+    dshReleasesCache = data.releases
+    releases = data.releases
+  }
+  const current = instance.dshRelease
+  const selectable = releases.filter((release) => release.id !== current?.id)
+  const upgrades = admin ? instance.dshUpgrades : myDshUpgrades
+  const options = selectable.map((release) => `<option value="${release.id}">${escapeHtml(dshVersionLabel(release))}${release.isDefault ? '（新用户默认）' : ''}</option>`).join('')
+  openModal({
+    title: `DSH 版本：${instance.username || instance.slug}`,
+    wide: true,
+    body: `<p>当前版本：<strong>${escapeHtml(dshVersionLabel(current))}</strong></p>
+      ${options ? `<div class="field"><label for="dsh-target-release">目标版本</label><select id="dsh-target-release">${options}</select></div>
+      <p class="hint">升级会暂时中断连接。系统先停止实例并备份 home、workspace 两个数据卷；目标版本健康检查失败时，会自动恢复旧版本和备份。</p>`
+        : `<p class="hint">${admin ? '暂无其他已构建版本。请先在“DSH 版本管理”构建镜像。' : '管理员尚未开放其他版本供个人自助升级。'}</p>`}
+      <h3>升级与回退记录</h3>${dshUpgradeHistoryHtml(upgrades, admin, new Set(releases.map((release) => release.id)))}`,
+    footer: `${options ? '<button class="btn btn-primary" id="dsh-start-upgrade">开始升级</button>' : ''}<button class="btn" data-close>关闭</button>`,
+  })
+  const start = $('#dsh-start-upgrade')
+  start?.addEventListener('click', async () => {
+    const releaseId = Number($('#dsh-target-release').value)
+    const chosen = selectable.find((release) => release.id === releaseId)
+    const ok = await confirmModal('确认升级 DSH', `将 ${instance.username || instance.slug} 从 ${dshVersionLabel(current)} 升级到 ${dshVersionLabel(chosen)}。升级前会创建可回退的数据快照，服务会短暂中断。`, '确认升级', false)
+    if (!ok) return
+    try {
+      await withButtonLoading(start, '正在提交…', () => api(admin
+        ? `/api/admin/instances/${instance.id}/dsh-upgrade`
+        : '/api/instance/dsh-upgrade', { method: 'POST', body: { releaseId } }))
+      toast('DSH 升级已开始，可稍后刷新查看健康检查和回退结果', 'ok')
+      if (admin) renderInstances(); else renderUser()
+    } catch (err) { toast(err.message, 'err') }
+  })
+  $('#modal-root').querySelectorAll('[data-dsh-rollback]').forEach((button) => button.addEventListener('click', async () => {
+    const id = button.dataset.dshRollback
+    const ok = await confirmModal('确认回退 DSH', '将恢复此记录所保存的版本和数据快照。当前版本的数据会先备份；若回退健康检查失败，将自动恢复当前版本。', '确认回退', false)
+    if (!ok) return
+    try {
+      await withButtonLoading(button, '正在提交…', () => api(admin
+        ? `/api/admin/instances/${instance.id}/dsh-rollbacks/${id}`
+        : `/api/instance/dsh-rollbacks/${id}`, { method: 'POST' }))
+      toast('DSH 回退已开始，可稍后刷新查看结果', 'ok')
+      if (admin) renderInstances(); else renderUser()
+    } catch (err) { toast(err.message, 'err') }
+  }))
+}
+
+async function renderDshVersions() {
+  try {
+    const data = await api('/api/admin/dsh/releases')
+    dshReleasesCache = data.releases
+    const active = data.builds.find((build) => ['queued', 'running'].includes(build.status))
+    $('#dsh-build-status').textContent = active
+      ? `正在构建 ${active.requestedVersion}，完成后请先选择一个测试实例灰度升级。`
+      : '构建完成不会自动升级用户实例；请从“实例管理”逐个或分批操作。'
+    $('#dsh-build-form').querySelector('button').disabled = Boolean(active)
+    $('#dsh-releases').innerHTML = data.releases.length
+      ? `<div class="table-wrap"><table><thead><tr><th>版本</th><th>镜像 ID</th><th>新用户默认</th><th>个人自助升级</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${data.releases.map((release) => `<tr>
+          <td>${escapeHtml(dshVersionLabel(release))}</td><td class="cell-mono">${escapeHtml(release.imageId.slice(0, 19))}…</td>
+          <td>${release.isDefault ? '是' : '否'}</td><td>${release.selfService ? '已开放' : '仅管理员'}</td><td>${fmtDate(release.createdAt)}</td>
+          <td><div class="cell-actions">${release.isDefault ? '' : `<button class="btn btn-ghost btn-sm" data-dsh-release="${release.id}" data-dsh-release-action="default">设为默认</button>`}
+          <button class="btn btn-ghost btn-sm" data-dsh-release="${release.id}" data-dsh-release-action="self">${release.selfService ? '关闭自助' : '开放自助'}</button></div></td>
+        </tr>`).join('')}</tbody></table></div>`
+      : '<p class="empty">尚无可用的 DSH 镜像版本。</p>'
+    $('#dsh-builds').innerHTML = data.builds.length
+      ? `<div class="table-wrap"><table><thead><tr><th>请求版本</th><th>状态</th><th>时间</th><th>说明</th></tr></thead><tbody>${data.builds.map((build) => `<tr><td>${escapeHtml(build.requestedVersion)}</td><td>${escapeHtml({ queued: '排队中', running: '构建中', completed: '已完成', failed: '失败', interrupted: '已中断' }[build.status] || build.status)}</td><td>${fmtDate(build.createdAt)}</td><td>${escapeHtml(build.message || '—')}</td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="hint">尚无构建记录。</p>'
+  } catch (err) { $('#dsh-build-status').textContent = err.message }
+}
+
+$('#dsh-build-form').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const button = e.target.querySelector('button[type="submit"]')
+  try {
+    await withButtonLoading(button, '正在提交…', () => api('/api/admin/dsh/releases/build', {
+      method: 'POST', body: { version: new FormData(e.target).get('version') },
+    }))
+    toast('镜像构建已开始，请勿关闭 Portal 服务', 'ok'); renderDshVersions()
+  } catch (err) { toast(err.message, 'err') }
+})
+
+$('#dsh-releases').addEventListener('click', async (e) => {
+  const button = e.target.closest('[data-dsh-release]')
+  if (!button) return
+  const release = dshReleasesCache.find((item) => String(item.id) === button.dataset.dshRelease)
+  if (!release) return
+  const isDefault = button.dataset.dshReleaseAction === 'default'
+  try {
+    await withButtonLoading(button, '正在保存…', () => api(`/api/admin/dsh/releases/${release.id}`, {
+      method: 'POST', body: isDefault ? { isDefault: true } : { selfService: !release.selfService },
+    }))
+    toast(isDefault ? '已设为新用户默认版本' : (release.selfService ? '已关闭个人自助升级' : '已开放个人自助升级'), 'ok')
+    renderDshVersions()
+  } catch (err) { toast(err.message, 'err') }
+})
+
+$('#i-dsh-upgrade').addEventListener('click', () => {
+  openDshVersionDialog(myInstance).catch((err) => toast(err.message, 'err'))
+})
+
 // ---- nav ----
 $$('#admin-nav .nav-item, #mobile-admin-nav .nav-item').forEach((n) => n.addEventListener('click', () => setAdminTab(n.dataset.tab)))
 $$('#user-nav [data-user-tab], #mobile-user-nav [data-user-tab]').forEach((button) => button.addEventListener('click', () => setUserTab(button.dataset.userTab)))
@@ -657,6 +808,7 @@ $('#profile-btn').addEventListener('click', openProfile)
 $('#mobile-profile-btn').addEventListener('click', openProfile)
 $('#refresh-btn').addEventListener('click', () => {
   if (me?.role === 'admin' && !$('#panel-plugins').classList.contains('hidden')) { renderPlugins(); return }
+  if (me?.role === 'admin' && !$('#panel-dsh-versions').classList.contains('hidden')) { renderDshVersions(); return }
   if (me?.role === 'admin' && !$('#panel-gateway').classList.contains('hidden')) { renderGateway(); return }
   if (me?.role !== 'admin' && !$('#user-gateway-view').classList.contains('hidden')) { renderMyGatewayUsage(); return }
   boot()
@@ -840,7 +992,7 @@ async function boot() {
 
 setInterval(async () => {
   if (!me) return
-  if (me.role === 'admin') { renderStats(); if (!$('#panel-instances').classList.contains('hidden')) renderInstances(); if (!$('#panel-plugins').classList.contains('hidden')) renderPlugins() }
+  if (me.role === 'admin') { renderStats(); if (!$('#panel-instances').classList.contains('hidden')) renderInstances(); if (!$('#panel-plugins').classList.contains('hidden')) renderPlugins(); if (!$('#panel-dsh-versions').classList.contains('hidden')) renderDshVersions() }
   else renderUser()
 }, 6000)
 

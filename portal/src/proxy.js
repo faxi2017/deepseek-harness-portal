@@ -107,7 +107,7 @@ function mayAccess(user, inst) {
  * @returns true once the instance is running and healthy.
  */
 async function ensureRunningInner(inst) {
-  if (inst.status === 'failed' || inst.status === 'deleting') return false
+  if (inst.status === 'failed' || inst.status === 'deleting' || inst.status === 'upgrading') return false
   if (inst.status === 'provisioning') return await containerRunning(inst.container_name)
   // Check the real container state rather than the DB status: a stale DB row
   // can say "stopped" while the container is already running, and issuing a

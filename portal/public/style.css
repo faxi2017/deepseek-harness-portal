@@ -326,6 +326,8 @@ a:hover { text-decoration: underline; }
 .badge-stopped .dot { background: var(--text-faint); }
 .badge-provisioning { background: var(--accent-soft); color: var(--accent-strong); }
 .badge-provisioning .dot { background: var(--accent-strong); animation: pulse 1.2s ease-in-out infinite; }
+.badge-upgrading { background: var(--accent-soft); color: var(--accent-strong); }
+.badge-upgrading .dot { background: var(--accent-strong); animation: pulse 1.2s ease-in-out infinite; }
 .badge-failed { background: var(--err-soft); color: var(--err); }
 .badge-failed .dot { background: var(--err); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }

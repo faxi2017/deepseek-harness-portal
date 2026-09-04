@@ -79,7 +79,175 @@ CREATE TABLE IF NOT EXISTS personal_usage_records (
 );
 CREATE INDEX IF NOT EXISTS personal_usage_user_day_idx ON personal_usage_records(user_id, day);
 CREATE INDEX IF NOT EXISTS personal_usage_day_model_idx ON personal_usage_records(day, user_id, model_key);
+
+CREATE TABLE IF NOT EXISTS dsh_releases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version TEXT NOT NULL,
+  image_id TEXT NOT NULL UNIQUE,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  self_service INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  created_by INTEGER REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS dsh_releases_default_idx ON dsh_releases(is_default, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS dsh_release_builds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  requested_version TEXT NOT NULL,
+  status TEXT NOT NULL,
+  release_id INTEGER REFERENCES dsh_releases(id),
+  requested_by INTEGER REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  message TEXT
+);
+CREATE INDEX IF NOT EXISTS dsh_release_builds_status_idx ON dsh_release_builds(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS dsh_upgrade_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL REFERENCES instances(id),
+  from_release_id INTEGER REFERENCES dsh_releases(id),
+  to_release_id INTEGER NOT NULL REFERENCES dsh_releases(id),
+  operation TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_by INTEGER REFERENCES users(id),
+  backup_home_volume TEXT,
+  backup_workspace_volume TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  message TEXT
+);
+CREATE INDEX IF NOT EXISTS dsh_upgrade_history_instance_idx ON dsh_upgrade_history(instance_id, id DESC);
 `)
+
+const instanceColumns = new Set(db.pragma('table_info(instances)').map((row) => row.name))
+if (!instanceColumns.has('release_id')) db.exec('ALTER TABLE instances ADD COLUMN release_id INTEGER REFERENCES dsh_releases(id)')
+
+/** Seed the image configured before version management was introduced. */
+export function ensureConfiguredDshRelease() {
+  if (!config.image) return null
+  const existing = db.prepare('SELECT * FROM dsh_releases WHERE image_id = ?').get(config.image)
+  if (existing) return existing
+  const any = db.prepare('SELECT id FROM dsh_releases LIMIT 1').get()
+  const result = db.prepare(`INSERT INTO dsh_releases
+      (version,image_id,is_default,self_service,created_at) VALUES (?,?,?,?,?)`)
+    .run('当前受控镜像', config.image, any ? 0 : 1, 0, Date.now())
+  const release = getDshRelease(Number(result.lastInsertRowid))
+  if (!any) db.prepare('UPDATE instances SET release_id=? WHERE release_id IS NULL').run(release.id)
+  return release
+}
+
+export function getDshRelease(id) {
+  if (!Number.isInteger(Number(id))) return null
+  return db.prepare('SELECT * FROM dsh_releases WHERE id = ?').get(Number(id)) ?? null
+}
+
+export function getDshReleaseByImage(imageId) {
+  return db.prepare('SELECT * FROM dsh_releases WHERE image_id = ?').get(imageId) ?? null
+}
+
+export function getDefaultDshRelease() {
+  return db.prepare('SELECT * FROM dsh_releases WHERE is_default=1 ORDER BY id DESC LIMIT 1').get() ?? null
+}
+
+export function listDshReleases() {
+  return db.prepare('SELECT * FROM dsh_releases ORDER BY is_default DESC, created_at DESC, id DESC').all()
+}
+
+export function updateDshRelease(id, fields) {
+  const allowed = ['is_default', 'self_service', 'version']
+  const entries = Object.entries(fields).filter(([key]) => allowed.includes(key))
+  if (entries.length === 0) return false
+  const run = db.transaction(() => {
+    if (fields.is_default === 1) db.prepare('UPDATE dsh_releases SET is_default=0').run()
+    const sets = entries.map(([key]) => `${key}=@${key}`).join(', ')
+    return db.prepare(`UPDATE dsh_releases SET ${sets} WHERE id=@id`).run({ id: Number(id), ...fields }).changes === 1
+  })
+  return run()
+}
+
+export function createDshRelease({ version, imageId, createdBy = null }) {
+  const existing = getDshReleaseByImage(imageId)
+  if (existing) return existing
+  const result = db.prepare(`INSERT INTO dsh_releases
+      (version,image_id,is_default,self_service,created_at,created_by) VALUES (?,?,0,0,?,?)`)
+    .run(version, imageId, Date.now(), createdBy)
+  return getDshRelease(Number(result.lastInsertRowid))
+}
+
+export function createDshReleaseBuild({ requestedVersion, requestedBy }) {
+  const result = db.prepare(`INSERT INTO dsh_release_builds
+      (requested_version,status,requested_by,created_at) VALUES (?, 'queued', ?, ?)`)
+    .run(requestedVersion, requestedBy, Date.now())
+  return getDshReleaseBuild(Number(result.lastInsertRowid))
+}
+
+export function getDshReleaseBuild(id) {
+  return db.prepare('SELECT * FROM dsh_release_builds WHERE id=?').get(Number(id)) ?? null
+}
+
+export function listDshReleaseBuilds(limit = 20) {
+  return db.prepare('SELECT * FROM dsh_release_builds ORDER BY id DESC LIMIT ?').all(limit)
+}
+
+export function updateDshReleaseBuild(id, fields) {
+  const keys = Object.keys(fields)
+  if (keys.length === 0) return
+  const sets = keys.map((key) => `${key}=@${key}`).join(', ')
+  db.prepare(`UPDATE dsh_release_builds SET ${sets} WHERE id=@id`).run({ id: Number(id), ...fields })
+}
+
+export function createDshUpgrade({ instanceId, fromReleaseId, toReleaseId, operation, requestedBy }) {
+  const now = Date.now()
+  const result = db.prepare(`INSERT INTO dsh_upgrade_history
+      (instance_id,from_release_id,to_release_id,operation,status,requested_by,created_at,started_at)
+      VALUES (?,?,?,?, 'running', ?,?,?)`)
+    .run(instanceId, fromReleaseId, toReleaseId, operation, requestedBy, now, now)
+  return getDshUpgrade(Number(result.lastInsertRowid))
+}
+
+export function getDshUpgrade(id) {
+  return db.prepare(`SELECT h.*, fr.version AS from_version, tr.version AS to_version
+    FROM dsh_upgrade_history h
+    LEFT JOIN dsh_releases fr ON fr.id=h.from_release_id
+    LEFT JOIN dsh_releases tr ON tr.id=h.to_release_id WHERE h.id=?`).get(Number(id)) ?? null
+}
+
+export function listDshUpgrades(instanceId, limit = 10) {
+  return db.prepare(`SELECT h.*, fr.version AS from_version, tr.version AS to_version
+    FROM dsh_upgrade_history h
+    LEFT JOIN dsh_releases fr ON fr.id=h.from_release_id
+    LEFT JOIN dsh_releases tr ON tr.id=h.to_release_id
+    WHERE h.instance_id=? ORDER BY h.id DESC LIMIT ?`).all(Number(instanceId), limit)
+}
+
+export function listDshUpgradeBackups(instanceId) {
+  return db.prepare(`SELECT backup_home_volume,backup_workspace_volume FROM dsh_upgrade_history
+    WHERE instance_id=? AND backup_home_volume IS NOT NULL AND backup_workspace_volume IS NOT NULL`).all(Number(instanceId))
+}
+
+export function updateDshUpgrade(id, fields) {
+  const keys = Object.keys(fields)
+  if (keys.length === 0) return
+  const sets = keys.map((key) => `${key}=@${key}`).join(', ')
+  db.prepare(`UPDATE dsh_upgrade_history SET ${sets} WHERE id=@id`).run({ id: Number(id), ...fields })
+}
+
+export function recoverInterruptedDshUpgrades() {
+  const now = Date.now()
+  const active = db.prepare("SELECT DISTINCT instance_id FROM dsh_upgrade_history WHERE status='running'").all()
+  db.prepare(`UPDATE dsh_upgrade_history SET status='interrupted', finished_at=?,
+    message='Portal 在升级过程中退出；请由管理员从升级记录执行回退。' WHERE status='running'`).run(now)
+  const mark = db.prepare("UPDATE instances SET status='failed', error=? WHERE id=? AND status='upgrading'")
+  for (const row of active) mark.run('升级被中断；请由管理员执行回退。', row.instance_id)
+}
+
+export function recoverInterruptedDshReleaseBuilds() {
+  db.prepare(`UPDATE dsh_release_builds SET status='interrupted', finished_at=?,
+    message='Portal 在构建过程中退出；请重新发起构建。' WHERE status IN ('queued','running')`).run(Date.now())
+}
 
 db.pragma('secure_delete = ON')
 
@@ -133,6 +301,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(absolute_expires_at, last_seen_at);
   CREATE INDEX IF NOT EXISTS auth_rate_limits_cleanup_idx ON auth_rate_limits(updated_at);
 `)
+ensureConfiguredDshRelease()
 
 // ---- users ----
 
@@ -207,11 +376,11 @@ export function setInviteCode(code) {
 
 // ---- instances ----
 
-export function createInstanceRow({ userId, slug, containerName, hostPort }) {
+export function createInstanceRow({ userId, slug, containerName, hostPort, releaseId = getDefaultDshRelease()?.id ?? null }) {
   return db.prepare(
-    `INSERT INTO instances (user_id, slug, container_name, host_port, status, created_at)
-     VALUES (?,?,?,?, 'provisioning', ?)`,
-  ).run(userId, slug, containerName, hostPort, Date.now()).lastInsertRowid
+    `INSERT INTO instances (user_id, slug, container_name, host_port, release_id, status, created_at)
+     VALUES (?,?,?,?,?, 'provisioning', ?)`,
+  ).run(userId, slug, containerName, hostPort, releaseId, Date.now()).lastInsertRowid
 }
 
 export function getInstanceBySlug(slug) {

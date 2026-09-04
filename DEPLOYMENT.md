@@ -52,7 +52,7 @@ DSH_IMAGE=填写构建脚本输出的sha256值
 - 修改 `portal/public/`：浏览器刷新即可，没有前端打包步骤。
 - 修改 `portal/src/`：在运行终端按 Ctrl+C，再执行 `run-portal.ps1`，刷新浏览器。
 - 修改 `portal/package*.json`：先重新 `npm ci --prefix portal`，再重启。
-- 修改 `image/` 或升级 DSH：重新构建、替换 `.env` 的镜像 ID、重启 Portal，再在管理员 Instances 页点 Reprovision。已有容器不会因镜像标签改变而自动升级。
+- 修改 `image/`：重新构建、替换 `.env` 的镜像 ID、重启 Portal。DSH 版本升级则使用 Portal 的“DSH 版本”页构建受控镜像并在实例管理中切换；已有实例不会因镜像标签改变而自动升级。
 
 ```powershell
 npm test --prefix portal
@@ -190,11 +190,11 @@ journalctl -u dsh-portal -n 60 --no-pager
 
 ## 6. 升级 DSH 和保留用户数据
 
-服务器运行 `bash build-image.sh` 获取当时的 npm latest，保存旧的 `DSH_IMAGE`，将新 ID 写入 `.env`，重启 `dsh-portal`。然后选择一个测试用户 Reprovision，验证成功后逐个重建其他用户。
+管理员进入“DSH 版本”，输入 `latest` 或明确的 npm 版本号构建受控镜像。构建沿用本项目的 Dockerfile（包含监听补丁和安全启动脚本），不会在任一用户容器中执行全局 `npm update`。构建完成后先将一个测试用户升级到目标版本；确认插件、模型网关和工作流正常，再逐个或分批升级其他实例。设置“新用户默认”只影响之后注册的用户，不会自动改变已有实例。
 
-Reprovision 只替换容器，保留该用户的 home 和 workspace 卷。插件数据在 home 卷内，但插件和新 DSH 的兼容性需要实测。不要点击 Delete 来完成升级，Delete 会删除卷。当前尚无批量升级、灰度队列、版本记录页面或自动回滚。
+每次升级都会停止该实例、备份其 home 和 workspace 卷到仅供 Portal 使用的 Docker 卷，然后以目标不可变镜像重新创建容器并执行 HTTP 健康检查。失败时系统会恢复升级前镜像和两个数据卷；成功记录也保留可回退快照。实例管理的“DSH 版本”可查看记录并执行手动回退；管理员可按版本单独开放个人自助升级。升级快照会随“删除实例/用户”一并删除。
 
-回退镜像时，旧镜像必须仍在服务器上，改回旧 ID 后重新创建容器。若新 DSH 已迁移用户数据格式，仅回退镜像不保证可用；升级前应停止对应实例并备份两个卷。不要使用全局 `docker system prune --volumes` 清理项目，它可能影响其他业务和用户数据。
+旧镜像和快照是回退前提，请勿在验证期运行会清理项目卷或镜像的全局 Docker 清理命令。即使自动回退成功，也应在新版本上先做灰度验证：未来 DSH 可能引入外部服务、插件或数据格式兼容性变化。
 
 ## 7. 当前限制与排查
 

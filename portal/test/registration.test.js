@@ -28,7 +28,7 @@ mock.module('../src/orchestrator.js', { namedExports: {
 } })
 const { fastify } = await import('../src/index.js')
 if (!fastify.server.listening) await once(fastify.server, 'listening')
-const { db, getUserByUsername, setSetting, setInviteCode } = await import('../src/db.js')
+const { createDshRelease, db, getUserByUsername, setSetting, setInviteCode, updateDshRelease } = await import('../src/db.js')
 const origin = process.env.PORTAL_ORIGIN
 const post = (path, body, headers = {}) => fetch(origin + path, { method: 'POST', headers: {
   'content-type': 'application/json', origin, ...headers,
@@ -175,4 +175,28 @@ test('plugin management requires an admin session, same origin and CSRF token', 
   const user = await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })
   const userCookie = user.headers.get('set-cookie').split(';')[0]
   assert.equal((await fetch(origin + '/api/admin/plugins', { headers: { cookie: userCookie } })).status, 403)
+})
+
+test('DSH release inventory is admin-only and a user sees only versions explicitly opened for self-service', async () => {
+  const release = createDshRelease({ version: '8.8.8', imageId: `sha256:${'b'.repeat(64)}` })
+  const userLogin = await post('/api/auth/login', { username: 'alice', password: 'replacement-password' })
+  const userCookie = userLogin.headers.get('set-cookie').split(';')[0]
+  const userSession = await userLogin.json()
+  const adminLogin = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminSession = await adminLogin.json()
+
+  assert.equal((await fetch(origin + '/api/admin/dsh/releases', { headers: { cookie: userCookie } })).status, 403)
+  assert.equal((await post(`/api/admin/dsh/releases/${release.id}`, { selfService: true }, {
+    cookie: userCookie, 'x-csrf-token': userSession.csrfToken,
+  })).status, 403)
+  assert.equal((await post(`/api/admin/dsh/releases/${release.id}`, { selfService: true }, {
+    cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken,
+  })).status, 200)
+  assert.equal(updateDshRelease(release.id, { self_service: 0 }), true)
+  const hidden = await fetch(origin + '/api/instance', { headers: { cookie: userCookie } }).then((r) => r.json())
+  assert.ok(!hidden.releases.some((item) => item.id === release.id))
+  updateDshRelease(release.id, { self_service: 1 })
+  const opened = await fetch(origin + '/api/instance', { headers: { cookie: userCookie } }).then((r) => r.json())
+  assert.ok(opened.releases.some((item) => item.id === release.id))
 })

@@ -70,6 +70,7 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
   app.post('/api/admin/gateway/models/:id/sync', guarded(async (req) => {
     const model = getModel(req.params.id)
     if (!model) invalid('模型不存在。')
+    if (!config.gatewayEnabled) invalid('服务器尚未启用模型网关，请先启动 Bifrost 并设置 MODEL_GATEWAY_ENABLED=true。')
     const syncedRevision = await syncModel(model)
     db.prepare('UPDATE gateway_models SET sync_error=NULL WHERE id=? AND updated_at=?').run(model.id, syncedRevision)
     return { ok: true }
@@ -104,7 +105,10 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
       WHERE r.day>=? AND r.day<=? GROUP BY r.user_id,r.model_id,r.day ORDER BY r.day DESC,r.user_id`).all(from, to) }
   }))
   app.get('/api/admin/gateway/analytics', guarded(async (req) => {
-    try { return gatewayAnalytics(req.query) }
+    try {
+      await Promise.all(listUsers().filter((user) => user.role !== 'admin').map((user) => syncPersonalUsage(user.id)))
+      return gatewayAnalytics(req.query)
+    }
     catch (error) {
       if (/^(请选择|用户筛选|模型筛选)/.test(error.message)) invalid(error.message)
       throw error

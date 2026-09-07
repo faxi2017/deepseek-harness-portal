@@ -12,11 +12,13 @@ const store = await import('../src/gateway-store.js')
 const { buildGateway, prepareRequest } = await import('../src/gateway.js')
 const { registerGatewayAdmin } = await import('../src/gateway-admin.js')
 const { gatewayAnalytics } = await import('../src/gateway-analytics.js')
-const { personalUsageFromEvents, recordPersonalUsage, personalModelKey } = await import('../src/personal-usage.js')
+const { personalUsageFromEvents, recordPersonalUsage, recordPersonalUsageSnapshots, personalModelKey } = await import('../src/personal-usage.js')
 const { config } = await import('../src/config.js')
+const { dshRpc } = await import('../src/gateway-dsh.js')
 let mode = 'success'
 let upstreamCalls = 0
 let observed
+let providerKeyName
 const upstream = Fastify()
 const providers = new Map()
 upstream.get('/api/providers', async () => ({ providers: [] }))
@@ -24,12 +26,18 @@ upstream.get('/api/providers/:id', async (req, reply) => providers.has(req.param
 upstream.post('/api/providers', async (req) => { providers.set(req.body.provider, req.body); return {} })
 upstream.put('/api/providers/:id', async (req) => { providers.set(req.params.id, req.body); return {} })
 upstream.get('/api/providers/:id/keys', async () => ({ keys: null, total: 0 }))
-upstream.post('/api/providers/:id/keys', async (req) => { assert.ok(req.body.value); return { key: { id: 'test-key' } } })
+upstream.post('/api/providers/:id/keys', async (req) => { assert.ok(req.body.value); providerKeyName = req.body.name; return { key: { id: 'test-key' } } })
 upstream.post('/api/governance/virtual-keys', async (req) => {
   assert.equal(req.body.provider_configs[0].allowed_models[0], 'test-upstream')
   return { virtual_key: { id: 'test-vk', value: 'sk-bf-fixture-secret' } }
 })
 upstream.put('/api/governance/virtual-keys/:id', async () => ({}))
+upstream.post('/api/settings/describe', async (req) => {
+  assert.equal(req.headers.cookie, 'dsh-auth=test')
+  assert.equal(req.body.method, 'settings/describe')
+  assert.deepEqual(req.body.payload, { args: {} })
+  return { type: 'server-response', rpcId: req.body.rpcId, result: { ok: true, value: { writable: true } } }
+})
 upstream.post('/v1/chat/completions', async (req, reply) => {
   upstreamCalls++
   observed = { body: req.body, headers: req.headers }
@@ -71,7 +79,7 @@ test.beforeEach(() => {
   store.savePolicy(uid, { enabled: true, models: [model.id], dailyTokens: 100000 })
   store.savePolicy(other, { enabled: false, models: [], dailyTokens: 100000 })
   token = store.decrypt(store.getPolicy(uid).secret)
-  mode = 'success'; upstreamCalls = 0
+  mode = 'success'; upstreamCalls = 0; providerKeyName = undefined
   setSetting('gateway_enabled', 'true')
 })
 test.after(async () => { await gateway.close(); await upstream.close(); await admin.close(); db.close(); rmSync(dir, { recursive: true, force: true }) })
@@ -112,6 +120,15 @@ test('parallel requests cannot reserve the same token balance', async () => {
   assert.equal(store.usage(uid).reservedTokens, 0)
   store.savePolicy(uid, { enabled: true, models: [model.id], dailyTokens: 0 })
   assert.equal((await call()).statusCode, 429)
+})
+
+test('a normal large DSH system prompt fits a 100k daily allowance', async () => {
+  model = { ...model, max_output_tokens: 40960 }
+  db.prepare('UPDATE gateway_models SET max_output_tokens=? WHERE id=?').run(model.max_output_tokens, model.id)
+  store.savePolicy(uid, { enabled: true, models: [model.id], dailyTokens: 100000 })
+  const request = body({ messages: [{ role: 'system', content: 'a'.repeat(70000) }, { role: 'user', content: 'hello' }], max_tokens: 40960 })
+  assert.ok(prepareRequest(request, model).reservation < 100000)
+  assert.equal((await call(request)).statusCode, 200)
 })
 
 test('SSE chunks preserve text and tool calls, consume final usage exactly once', async () => {
@@ -212,11 +229,17 @@ test('Bifrost v2 null-key bootstrap, inference credentials and exact endpoint pa
     assert.equal(p.custom_provider_config.request_path_overrides.chat_completion, '/chat/completions')
     assert.equal(p.custom_provider_config.request_path_overrides.chat_completion_stream, '/chat/completions')
     assert.equal(p.network_config.max_retries, 0)
+    assert.equal(providerKeyName, 'portal-managed-m-test')
     assert.equal(bifrostHeaders(model).authorization, 'Bearer sk-bf-fixture-secret')
     const detail = await admin.inject({ url: '/api/admin/gateway', headers: { authorization: 'admin' } })
     assert.equal(detail.json().healthy, true)
     assert.ok(!detail.body.includes('fixture-secret') && !detail.body.includes('upstream-SECRET') && !detail.body.includes(token))
   } finally { config.bifrostUrl = old }
+})
+
+test('current DSH RPC uses slash endpoints, args envelope and its authenticated session', async () => {
+  const value = await dshRpc(upstream.server.address().port, 'settings.describe', {}, { authCookie: 'dsh-auth=test' })
+  assert.deepEqual(value, { writable: true })
 })
 
 test('invalid statistics dates and unsafe model base URLs are rejected without exposing inputs', async () => {
@@ -323,5 +346,17 @@ test('completed personal-model events are idempotent, visible in analytics, and 
   assert.equal(data.rows[0].source, 'personal')
   assert.equal(data.rows[0].userId, undefined)
   assert.ok(!response.body.includes('cacheReadTokens') && !response.body.includes('reasoningTokens'))
+  assert.equal(store.usage(uid, '2026-09-02').chargedTokens, 0)
+})
+
+test('current DSH cumulative usage snapshots are recorded as idempotent deltas', () => {
+  const first = { sessionId: 'session-current', seq: 20, occurredAt: Date.parse('2026-09-02T03:00:00Z'),
+    provider: 'deepseek-official', model: 'deepseek-v4-flash', inputTokens: 100, outputTokens: 20, cacheReadTokens: 10 }
+  assert.equal(recordPersonalUsageSnapshots(uid, [first]), 1)
+  assert.equal(recordPersonalUsageSnapshots(uid, [first]), 0)
+  assert.equal(recordPersonalUsageSnapshots(uid, [{ ...first, seq: 30, inputTokens: 160, outputTokens: 35, cacheReadTokens: 25 }]), 1)
+  const totals = db.prepare(`SELECT SUM(input_tokens) input,SUM(output_tokens) output,SUM(cache_read_tokens) cache
+    FROM personal_usage_records WHERE user_id=?`).get(uid)
+  assert.deepEqual(totals, { input: 185, output: 35, cache: 25 })
   assert.equal(store.usage(uid, '2026-09-02').chargedTokens, 0)
 })

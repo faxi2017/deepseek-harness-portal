@@ -759,7 +759,7 @@ async function renderDshVersions() {
     dshReleasesCache = data.releases
     const active = data.builds.find((build) => ['queued', 'running'].includes(build.status))
     $('#dsh-build-status').textContent = active
-      ? `正在构建 ${active.requestedVersion}，完成后请先选择一个测试实例灰度升级。`
+      ? `正在构建 ${active.requestedVersion}：${active.message || '正在排队。'} 页面会自动刷新。`
       : '构建完成不会自动升级用户实例；请从“实例管理”逐个或分批操作。'
     $('#dsh-build-form').querySelector('button').disabled = Boolean(active)
     $('#dsh-releases').innerHTML = data.releases.length
@@ -771,7 +771,7 @@ async function renderDshVersions() {
         </tr>`).join('')}</tbody></table></div>`
       : '<p class="empty">尚无可用的 DSH 镜像版本。</p>'
     $('#dsh-builds').innerHTML = data.builds.length
-      ? `<div class="table-wrap"><table><thead><tr><th>请求版本</th><th>状态</th><th>时间</th><th>说明</th></tr></thead><tbody>${data.builds.map((build) => `<tr><td>${escapeHtml(build.requestedVersion)}</td><td>${escapeHtml({ queued: '排队中', running: '构建中', completed: '已完成', failed: '失败', interrupted: '已中断' }[build.status] || build.status)}</td><td>${fmtDate(build.createdAt)}</td><td>${escapeHtml(build.message || '—')}</td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table><thead><tr><th>请求版本</th><th>状态</th><th>当前阶段</th><th>时间</th><th>说明</th></tr></thead><tbody>${data.builds.map((build) => `<tr><td>${escapeHtml(build.requestedVersion)}</td><td>${escapeHtml({ queued: '排队中', running: '构建中', completed: '已完成', failed: '失败', interrupted: '已中断' }[build.status] || build.status)}</td><td>${escapeHtml({ queued: '等待执行', resolving: '确认版本', preparing: '准备构建', 'pulling-base': '拉取基础镜像', installing: '安装 DSH', patching: '校验补丁', hardening: '准备运行环境', exporting: '生成镜像', completed: '已完成', failed: '已失败', interrupted: '已中断' }[build.phase] || '构建镜像')}</td><td>${fmtDate(build.createdAt)}</td><td>${escapeHtml(build.message || '—')}${build.logTail ? `<details><summary>查看末尾构建日志</summary><pre class="build-log">${escapeHtml(build.logTail)}</pre></details>` : ''}</td></tr>`).join('')}</tbody></table></div>`
       : '<p class="hint">尚无构建记录。</p>'
   } catch (err) { $('#dsh-build-status').textContent = err.message }
 }

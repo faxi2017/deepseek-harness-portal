@@ -14,6 +14,9 @@ import { instanceHostPort, trustedInstanceRequest } from './routing.js'
 const proxy = httpProxy.createProxyServer({ xfwd: false, changeOrigin: true })
 const activeWebSockets = new Set()
 const ensureRunningPromises = new Map()
+const INJECT_DSH_HOST = Symbol('injectDshHost')
+const DSH_HOST_BOOTSTRAP_PATH = '/__portal/dsh-host.js'
+const DSH_HOST_BOOTSTRAP = 'globalThis.__DSH_TRANSPORT__={...(globalThis.__DSH_TRANSPORT__??{}),ownsHost:true};\n'
 
 export function closeUserSockets(userId) {
   for (const tracked of activeWebSockets) {
@@ -58,11 +61,31 @@ function hardenProxyRequest(proxyReq, req) {
   const authority = String(proxyReq.getHeader('host'))
   const allowedCookies = dshAuthCookies(req.headers.cookie, dshAuthCookieName(authority))
   for (const name of STRIPPED_REQUEST_HEADERS) proxyReq.removeHeader(name)
+  if (req[INJECT_DSH_HOST]) proxyReq.removeHeader('accept-encoding')
   if (allowedCookies.length > 0) proxyReq.setHeader('cookie', allowedCookies.join('; '))
   // The outer request has already passed the exact tenant Origin check. DSH
   // sees the proxy target as its Host, so give same-origin-protected plugins a
   // matching internal Origin without forwarding the browser-visible origin.
   if (hasValidatedOrigin) proxyReq.setHeader('origin', `http://${proxyReq.getHeader('host')}`)
+}
+
+function relayHtmlWithHostBootstrap(proxyRes, res) {
+  const chunks = []
+  proxyRes.on('data', (chunk) => chunks.push(chunk))
+  proxyRes.once('error', () => res.destroy())
+  proxyRes.once('end', () => {
+    const headers = { ...proxyRes.headers }
+    let body = Buffer.concat(chunks)
+    if (proxyRes.statusCode === 200 && String(headers['content-type'] ?? '').toLowerCase().includes('text/html')) {
+      const html = body.toString('utf8')
+      const tag = `<script src="${DSH_HOST_BOOTSTRAP_PATH}"></script>`
+      body = Buffer.from(html.includes('</head>') ? html.replace('</head>', `${tag}</head>`) : `${tag}${html}`)
+      delete headers['content-encoding']
+      headers['content-length'] = String(body.length)
+    }
+    res.writeHead(proxyRes.statusCode ?? 502, headers)
+    res.end(body)
+  })
 }
 
 function filterUpstreamCookies(headers, expectedName) {
@@ -94,9 +117,10 @@ proxy.on('proxyReqWs', (proxyReq, req) => {
   proxyReq.once('upgrade', (proxyRes) => filterUpstreamCookies(proxyRes.headers, expectedName))
   proxyReq.once('response', (proxyRes) => filterUpstreamCookies(proxyRes.headers, expectedName))
 })
-proxy.on('proxyRes', (proxyRes, req) => {
+proxy.on('proxyRes', (proxyRes, req, res) => {
   const hostPort = instanceHostPort(req.socket.localPort)
   filterUpstreamCookies(proxyRes.headers, dshAuthCookieName(`127.0.0.1:${hostPort}`))
+  if (req[INJECT_DSH_HOST]) relayHtmlWithHostBootstrap(proxyRes, res)
 })
 
 proxy.on('error', (err, _req, res) => {
@@ -248,8 +272,13 @@ export function setupProxy(fastify) {
     }
     touchInstanceRequest(slug)
     const requestUrl = new URL(req.raw.url ?? '/', 'http://portal.invalid')
+    if (req.raw.method === 'GET' && requestUrl.pathname === DSH_HOST_BOOTSTRAP_PATH) {
+      reply.type('application/javascript').header('Cache-Control', 'no-store').send(DSH_HOST_BOOTSTRAP)
+      return reply
+    }
     const bootstrapRequested = requestUrl.searchParams.get('portal_bootstrap') === '1'
     const expectedCookieName = dshAuthCookieName(`127.0.0.1:${current.host_port}`)
+    let bootstrapping = false
     if (req.raw.method === 'GET' && requestUrl.pathname === '/'
         && (bootstrapRequested || dshAuthCookies(req.raw.headers.cookie, expectedCookieName).length === 0)) {
       const token = await dshWebToken(current.container_name)
@@ -258,9 +287,15 @@ export function setupProxy(fastify) {
         return reply
       }
       req.raw.url = `/?token=${encodeURIComponent(token)}`
+      bootstrapping = true
     }
+    const injectDshHost = req.raw.method === 'GET' && requestUrl.pathname === '/' && !bootstrapping
+    req.raw[INJECT_DSH_HOST] = injectDshHost
     reply.hijack()
-    proxy.web(req.raw, reply.raw, { target: `http://127.0.0.1:${current.host_port}` })
+    proxy.web(req.raw, reply.raw, {
+      target: `http://127.0.0.1:${current.host_port}`,
+      selfHandleResponse: injectDshHost,
+    })
   })
 
   async function handleUpgrade(req, socket, head) {

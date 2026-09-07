@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS personal_usage_records (
 );
 CREATE INDEX IF NOT EXISTS personal_usage_user_day_idx ON personal_usage_records(user_id, day);
 CREATE INDEX IF NOT EXISTS personal_usage_day_model_idx ON personal_usage_records(day, user_id, model_key);
+CREATE TABLE IF NOT EXISTS personal_usage_checkpoints (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  session_id TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cache_read_tokens INTEGER NOT NULL,
+  PRIMARY KEY(user_id, session_id)
+);
 
 CREATE TABLE IF NOT EXISTS dsh_releases (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +133,10 @@ CREATE INDEX IF NOT EXISTS dsh_upgrade_history_instance_idx ON dsh_upgrade_histo
 
 const instanceColumns = new Set(db.pragma('table_info(instances)').map((row) => row.name))
 if (!instanceColumns.has('release_id')) db.exec('ALTER TABLE instances ADD COLUMN release_id INTEGER REFERENCES dsh_releases(id)')
+
+const dshReleaseBuildColumns = new Set(db.pragma('table_info(dsh_release_builds)').map((row) => row.name))
+if (!dshReleaseBuildColumns.has('phase')) db.exec("ALTER TABLE dsh_release_builds ADD COLUMN phase TEXT NOT NULL DEFAULT 'queued'")
+if (!dshReleaseBuildColumns.has('log_tail')) db.exec("ALTER TABLE dsh_release_builds ADD COLUMN log_tail TEXT NOT NULL DEFAULT ''")
 
 /** Seed the image configured before version management was introduced. */
 export function ensureConfiguredDshRelease() {
@@ -246,7 +259,7 @@ export function recoverInterruptedDshUpgrades() {
 
 export function recoverInterruptedDshReleaseBuilds() {
   db.prepare(`UPDATE dsh_release_builds SET status='interrupted', finished_at=?,
-    message='Portal 在构建过程中退出；请重新发起构建。' WHERE status IN ('queued','running')`).run(Date.now())
+    phase='interrupted', message='Portal 在构建过程中退出；请重新发起构建。' WHERE status IN ('queued','running')`).run(Date.now())
 }
 
 db.pragma('secure_delete = ON')
@@ -423,6 +436,7 @@ export function deleteInstance(id) {
 export function deleteUser(id) {
   db.prepare('DELETE FROM instances WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id)
+  db.prepare('DELETE FROM personal_usage_checkpoints WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM personal_usage_records WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM users WHERE id = ?').run(id)
 }

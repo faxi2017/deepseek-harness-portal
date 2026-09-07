@@ -488,7 +488,7 @@ fastify.get('/api/admin/dsh/releases', async (req, reply) => {
     builds: listDshReleaseBuilds().map((build) => ({
       id: build.id, requestedVersion: build.requested_version, status: build.status,
       releaseId: build.release_id, createdAt: build.created_at, finishedAt: build.finished_at,
-      message: build.message,
+      phase: build.phase, logTail: build.log_tail, message: build.message,
     })),
   }
 })

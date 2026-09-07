@@ -45,8 +45,10 @@ async function syncModelUnlocked(model) {
   }
   await bifrost(`/api/providers/${provider}`, 'PUT', payload)
   const { keys } = await bifrost(`/api/providers/${provider}/keys`)
-  const key = (keys ?? []).find((k) => k.name === 'portal-managed')
-  const keyBody = { name: 'portal-managed', value: decrypt(model.secret), models: [model.upstream_model],
+  const legacyKey = (keys ?? []).find((k) => k.name === 'portal-managed')
+  const managedKeyName = `portal-managed-${model.id}`
+  const key = (keys ?? []).find((k) => k.name === managedKeyName) ?? legacyKey
+  const keyBody = { name: key?.name ?? managedKeyName, value: decrypt(model.secret), models: [model.upstream_model],
     weight: 1, enabled: Boolean(model.enabled) }
   await bifrost(`/api/providers/${provider}/keys${key ? `/${key.id}` : ''}`, key ? 'PUT' : 'POST', keyBody)
   let saved = JSON.parse(getSetting(`bifrost_vk_${model.id}`, 'null'))

@@ -78,6 +78,23 @@ test('token-protected DSH endpoints are considered ready', async () => {
   }
 })
 
+test('health check waits for the core LLM route after the web server starts', async () => {
+  let probes = 0
+  const server = http.createServer((req, res) => {
+    assert.equal(req.url, '/api/llm/listProviders')
+    assert.equal(req.method, 'POST')
+    res.writeHead(++probes < 2 ? 404 : 401).end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const { port } = server.address()
+    assert.equal(await waitHealthy(port, 2500), true)
+    assert.equal(probes, 2)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 test('DSH bootstrap token is read from the latest canonical startup log', async () => {
   const oldToken = 'a'.repeat(43)
   const currentToken = 'b'.repeat(43)

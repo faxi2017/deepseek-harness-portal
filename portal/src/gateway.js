@@ -23,7 +23,11 @@ export function prepareRequest(body, model) {
   const payload = Object.fromEntries(allowedFields.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]))
   // Conservative text allowance, including tool schemas and provider framing. This is a
   // reservation, never presented as measured usage. Returned usage replaces it at settlement.
-  const inputAllowance = Buffer.byteLength(JSON.stringify(payload), 'utf8') * 2 + body.messages.length * 32 + 1024
+  // DSH requests include sizeable system instructions and tool schemas. Reserving
+  // two tokens per UTF-8 byte rejects normal fresh chats before any usage exists.
+  // One token per two bytes remains conservative for mixed prose/code while
+  // leaving room for the configured output ceiling; settlement uses exact usage.
+  const inputAllowance = Math.ceil(Buffer.byteLength(JSON.stringify(payload), 'utf8') / 2) + body.messages.length * 32 + 1024
   payload.model = `portal-${model.id}/${model.upstream_model}`
   payload.max_tokens = max
   payload.stream = body.stream === true

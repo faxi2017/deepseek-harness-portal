@@ -555,19 +555,24 @@ function isPortFree(port) {
   })
 }
 
-/** Poll the instance's HTTP root until DSH is ready or timeout. */
+/** Poll until DSH's core LLM route is registered, not merely its HTTP server. */
 export async function waitHealthy(hostPort, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const healthy = await new Promise((resolve) => {
-      const req = http.get({ host: '127.0.0.1', port: hostPort, path: '/', timeout: Math.min(5000, deadline - Date.now()) }, (res) => {
+      const req = http.request({
+        host: '127.0.0.1', port: hostPort, path: '/api/llm/listProviders', method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': 2 },
+        timeout: Math.min(5000, deadline - Date.now()),
+      }, (res) => {
         res.resume()
-        // Newer DSH releases challenge unauthenticated requests at `/` with
-        // 401. The response still confirms that the expected web server is ready.
+        // The unauthenticated probe is expected to be challenged. A 404 means
+        // the web server is listening but the core plugin routes are not ready.
         resolve(res.statusCode === 200 || res.statusCode === 401)
       })
       req.once('error', () => resolve(false))
       req.once('timeout', () => req.destroy(new Error('health check timeout')))
+      req.end('{}')
     })
     if (healthy) return true
     if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, Math.min(2000, deadline - Date.now())))

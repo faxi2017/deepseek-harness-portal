@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { db, getInstanceByUserId } from './db.js'
 import { dshRpc } from './gateway-dsh.js'
 import { gatewayDay } from './gateway-store.js'
+import { docker } from './docker.js'
 
 const locks = new Map()
 const recentlySynced = new Map()
@@ -41,6 +42,50 @@ export const recordPersonalUsage = db.transaction((records) => {
   return records.reduce((added, record) => added + insert.run(record).changes, 0)
 })
 
+export const recordPersonalUsageSnapshots = db.transaction((userId, snapshots) => {
+  const previous = db.prepare(`SELECT event_seq,input_tokens,output_tokens,cache_read_tokens
+    FROM personal_usage_checkpoints WHERE user_id=? AND session_id=?`)
+  const save = db.prepare(`INSERT INTO personal_usage_checkpoints
+    (user_id,session_id,event_seq,input_tokens,output_tokens,cache_read_tokens) VALUES(?,?,?,?,?,?)
+    ON CONFLICT(user_id,session_id) DO UPDATE SET event_seq=excluded.event_seq,input_tokens=excluded.input_tokens,
+    output_tokens=excluded.output_tokens,cache_read_tokens=excluded.cache_read_tokens`)
+  let added = 0
+  for (const snapshot of snapshots) {
+    if (typeof snapshot?.sessionId !== 'string' || snapshot.sessionId.length > 200
+        || typeof snapshot.provider !== 'string' || typeof snapshot.model !== 'string'
+        || snapshot.provider.length > 160 || snapshot.model.length > 160
+        || ![snapshot.seq, snapshot.occurredAt, snapshot.inputTokens, snapshot.outputTokens, snapshot.cacheReadTokens].every(nonNegativeInteger)) continue
+    const prior = previous.get(userId, snapshot.sessionId)
+    if (prior && snapshot.seq <= prior.event_seq) continue
+    const delta = (value, old) => value >= old ? value - old : value
+    const inputTokens = delta(snapshot.inputTokens, prior?.input_tokens ?? 0)
+    const outputTokens = delta(snapshot.outputTokens, prior?.output_tokens ?? 0)
+    const cacheReadTokens = delta(snapshot.cacheReadTokens, prior?.cache_read_tokens ?? 0)
+    save.run(userId, snapshot.sessionId, snapshot.seq, snapshot.inputTokens, snapshot.outputTokens, snapshot.cacheReadTokens)
+    if (inputTokens + outputTokens + cacheReadTokens === 0) continue
+    added += recordPersonalUsage([{
+      id: `personal-snapshot:${userId}:${snapshot.sessionId}:${snapshot.seq}`,
+      userId, sessionId: `snapshot:${snapshot.sessionId}`, eventSeq: snapshot.seq,
+      provider: snapshot.provider, modelId: snapshot.model, modelKey: personalModelKey(snapshot.provider, snapshot.model),
+      day: gatewayDay(snapshot.occurredAt), occurredAt: snapshot.occurredAt,
+      inputTokens: inputTokens + cacheReadTokens, outputTokens, cacheReadTokens, reasoningTokens: 0,
+    }])
+  }
+  return added
+})
+
+async function readUsageSnapshots(instance) {
+  const script = `const fs=require('fs'),p='/home/dsh/.dsh/storages/session_projcache/sessions';let out=[];
+try{for(const name of fs.readdirSync(p)){if(!name.endsWith('.json'))continue;try{const file=p+'/'+name,x=JSON.parse(fs.readFileSync(file)),r=x.record?.rows,
+u=r?.tokenUsage?.val?.totals,m=r?.modelSelection?.val?.lastUsed;if(!u||!m)continue;out.push({sessionId:name.slice(0,-5),seq:r.tokenUsage.seq,
+occurredAt:Math.trunc(fs.statSync(file).mtimeMs),provider:m.provider,model:m.model,inputTokens:u.uncachedInputTokens,
+outputTokens:u.outputTokens,cacheReadTokens:u.cacheReadTokens??0})}catch{}}}catch{}process.stdout.write(JSON.stringify(out))`
+  const { stdout } = await docker(['exec', instance.container_name, 'node', '-e', script])
+  const snapshots = JSON.parse(stdout)
+  if (!Array.isArray(snapshots)) throw new Error('Invalid DSH usage snapshot')
+  return snapshots
+}
+
 async function syncUnlocked(userId) {
   const instance = getInstanceByUserId(userId)
   if (!instance || instance.status !== 'running') return { status: 'unavailable', added: 0 }
@@ -66,7 +111,14 @@ async function syncUnlocked(userId) {
     recentlySynced.set(userId, Date.now())
     return { status: 'ok', added, scanned }
   } catch {
-    return { status: 'unavailable', added: 0 }
+    try {
+      const snapshots = await readUsageSnapshots(instance)
+      const added = recordPersonalUsageSnapshots(userId, snapshots)
+      recentlySynced.set(userId, Date.now())
+      return { status: 'ok', source: 'snapshot', added, scanned: snapshots.length }
+    } catch {
+      return { status: 'unavailable', added: 0 }
+    }
   }
 }
 

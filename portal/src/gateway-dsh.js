@@ -1,13 +1,40 @@
 import { randomUUID } from 'node:crypto'
 import { config } from './config.js'
-import { db, getInstanceByUserId } from './db.js'
+import { db, getInstanceByHostPort, getInstanceByUserId } from './db.js'
 import { allModels, decrypt, ensurePolicy, getPolicy } from './gateway-store.js'
+import { docker } from './docker.js'
 
-export async function dshRpc(port, method, payload) {
+const dshCookies = new Map()
+
+async function dshCookie(port) {
+  const instance = getInstanceByHostPort(port)
+  if (!instance) throw new Error('DSH instance is unavailable')
+  const { stdout = '', stderr = '' } = await docker(['logs', '--tail', '50', instance.container_name])
+  const matches = [...`${stdout}\n${stderr}`.matchAll(/^dsh web: \S+\?token=([A-Za-z0-9_-]{43})(?:\s|$)/gm)]
+  const token = matches.at(-1)?.[1]
+  if (!token) throw new Error('DSH authentication is not ready')
+  const response = await fetch(`http://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`, {
+    signal: AbortSignal.timeout(10000), redirect: 'manual',
+  })
+  const cookie = response.headers.get('set-cookie')?.split(';', 1)[0]
+  if (!cookie) throw new Error('DSH authentication failed')
+  dshCookies.set(port, cookie)
+  return cookie
+}
+
+export async function dshRpc(port, method, payload, options = {}) {
   const rpcId = randomUUID()
-  const response = await fetch(`http://127.0.0.1:${port}/api/${method}`, { method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type: 'client-request', rpcId, method, payload }), signal: AbortSignal.timeout(10000) })
+  const endpoint = method.replaceAll('.', '/')
+  let cookie = options.authCookie ?? dshCookies.get(port) ?? await dshCookie(port)
+  const send = () => fetch(`http://127.0.0.1:${port}/api/${endpoint}`, { method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args: payload } }), signal: AbortSignal.timeout(10000) })
+  let response = await send()
+  if (response.status === 401 && options.authCookie === undefined) {
+    dshCookies.delete(port)
+    cookie = await dshCookie(port)
+    response = await send()
+  }
   if (!response.ok) throw new Error('DSH 配置接口不可用，请启动实例后重试；升级后请检查接口兼容性。')
   const result = await response.json()
   if (result.rpcId !== rpcId || !result.result?.ok) throw new Error('DSH 配置发生变化或接口不兼容，请刷新后重试。')
@@ -42,7 +69,7 @@ async function syncDshUnlocked(userId, { setDefault = false, initial = false } =
     await dshRpc(inst.host_port, 'settings.mutate', { ns: ns.ns, expectedRevision: ns.revision,
       ops: [{ op: 'set', path: ['providers', 'portal-gateway'], value: {
         displayName: '平台模型', api: 'openai-completions', baseURL: config.gatewayTenantUrl,
-        apiKeyEnv: 'PORTAL_GATEWAY_API_KEY', models: models.map((m) => ({ id: m.id, name: m.name,
+        apiKeyEnv: 'PORTAL_GATEWAY_API_KEY', models: models.map((m) => ({ id: m.id, name: m.upstream_model,
           maxTokens: m.max_output_tokens, contextWindow: 65536, input: ['text'] })),
       } }] })
     if (setDefault) {

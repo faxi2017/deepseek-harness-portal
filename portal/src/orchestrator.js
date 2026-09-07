@@ -526,6 +526,13 @@ export async function containerLogs(name, tail = 200) {
   }
 }
 
+/** Read the most recently printed DSH Web bootstrap token without exposing it to Portal clients. */
+export async function dshWebToken(name) {
+  const { stdout = '', stderr = '' } = await docker(['logs', '--tail', '50', name])
+  const matches = [...`${stdout}\n${stderr}`.matchAll(/^dsh web: \S+\?token=([A-Za-z0-9_-]{43})(?:\s|$)/gm)]
+  return matches.at(-1)?.[1] ?? null
+}
+
 /** Find a free 127.0.0.1 port in the configured range, avoiding DB-claimed ports. */
 export async function allocatePort() {
   const used = new Set(
@@ -548,14 +555,16 @@ function isPortFree(port) {
   })
 }
 
-/** Poll the instance's HTTP root until 200 or timeout. */
+/** Poll the instance's HTTP root until DSH is ready or timeout. */
 export async function waitHealthy(hostPort, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const healthy = await new Promise((resolve) => {
       const req = http.get({ host: '127.0.0.1', port: hostPort, path: '/', timeout: Math.min(5000, deadline - Date.now()) }, (res) => {
         res.resume()
-        resolve(res.statusCode === 200)
+        // Newer DSH releases challenge unauthenticated requests at `/` with
+        // 401. The response still confirms that the expected web server is ready.
+        resolve(res.statusCode === 200 || res.statusCode === 401)
       })
       req.once('error', () => resolve(false))
       req.once('timeout', () => req.destroy(new Error('health check timeout')))
@@ -621,18 +630,14 @@ export async function provision(instanceId, { setDefaultModel = false } = {}) {
 async function applyPluginsUnlocked(inst, policy) {
   recordPluginState(inst.id, policy, 'running', '正在安装，成功后自动重启')
   updateInstanceUnlessDeleting(inst.id, { last_active: Date.now() })
+  let container
   try {
-    const object = await inspectObject('container', inst.container_name)
-    if (!object || object.Config?.Labels?.['dsh.portal.managed'] !== 'true') throw new Error('unmanaged or missing container')
-    if (!object.State.Running) {
-      await startContainerUnlocked(inst.container_name)
-      if (!(await waitHealthy(inst.host_port, config.instanceStartTimeoutMs))) throw new Error('startup unhealthy')
-      updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
-    }
+    container = await inspectObject('container', inst.container_name)
+    if (!container || container.Config?.Labels?.['dsh.portal.managed'] !== 'true') throw new Error('unmanaged or missing container')
+    if (container.State.Running) await stopContainerUnlocked(inst.container_name)
     const installed = await installPluginCommands(inst.container_name, policy.commands)
     if (getInstanceById(inst.id)?.status === 'deleting') throw new Error('deleting')
-    await docker(['restart', '-t', '15', inst.container_name], { timeout: Math.max(config.dockerCommandTimeoutMs, 30000) })
-    invalidateRunning(inst.container_name)
+    await startContainerUnlocked(inst.container_name)
     if (!(await waitHealthy(inst.host_port, config.instanceStartTimeoutMs))) {
       updateInstanceUnlessDeleting(inst.id, { status: 'failed', error: '插件安装后实例健康检查失败，请检查插件兼容性。' })
       throw new Error('unhealthy')
@@ -640,6 +645,13 @@ async function applyPluginsUnlocked(inst, policy) {
     updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null, last_active: Date.now() })
     recordPluginState(inst.id, policy, 'completed', '已安装并启用，重启检查通过', installed)
   } catch {
+    try {
+      container = await inspectObject('container', inst.container_name)
+      if (container && !container.State.Running) await startContainerUnlocked(inst.container_name)
+      if (container && await waitHealthy(inst.host_port, config.instanceStartTimeoutMs)) {
+        updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+      }
+    } catch {}
     recordPluginState(inst.id, policy, 'failed', '安装或重启检查失败。请检查网络、包名和插件兼容性后重试；已完成的安装会保留。')
   }
 }

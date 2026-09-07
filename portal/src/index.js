@@ -386,7 +386,7 @@ fastify.post('/api/instance/start', async (req, reply) => {
   if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await startContainer(inst.container_name)
   await waitUntilRunning(inst)
-  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null, last_active: Date.now() })
   return { instance: getInstanceByUserId(user.id) }
 })
 
@@ -411,7 +411,7 @@ fastify.post('/api/instance/restart', async (req, reply) => {
   if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await restartContainer(inst.container_name)
   await waitUntilRunning(inst)
-  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null, last_active: Date.now() })
   return { instance: getInstanceByUserId(user.id) }
 })
 
@@ -586,7 +586,7 @@ fastify.post('/api/admin/instances/:id/start', async (req, reply) => {
   if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await startContainer(inst.container_name)
   await waitUntilRunning(inst)
-  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null, last_active: Date.now() })
   return { ok: true }
 })
 
@@ -609,7 +609,7 @@ fastify.post('/api/admin/instances/:id/restart', async (req, reply) => {
   if (inst.status === 'upgrading') return reply.code(409).send({ error: 'instance upgrade is in progress' })
   await restartContainer(inst.container_name)
   await waitUntilRunning(inst)
-  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
+  updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null, last_active: Date.now() })
   return { ok: true }
 })
 

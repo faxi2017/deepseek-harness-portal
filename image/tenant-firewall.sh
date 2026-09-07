@@ -3,10 +3,19 @@
 set -euo pipefail
 subnet="${1:?tenant subnet required}"
 [[ "$subnet" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || exit 1
-ipt() { iptables -w 10 "$@"; }
+iptables_bin=""
+# Docker may use legacy rules while the image defaults to nftables (or vice versa).
+# Use the backend that can see Docker's dedicated isolation chain.
+for candidate in iptables iptables-legacy iptables-nft; do
+  command -v "$candidate" >/dev/null 2>&1 || continue
+  if "$candidate" -w 10 -S DOCKER-USER >/dev/null 2>&1; then
+    iptables_bin="$candidate"
+    break
+  fi
+done
+[[ -n "$iptables_bin" ]] || { echo 'Docker DOCKER-USER chain is unavailable' >&2; exit 1; }
+ipt() { "$iptables_bin" -w 10 "$@"; }
 add() { ipt -C "$@" 2>/dev/null || ipt -I "$1" 1 "${@:2}"; }
-# Fail rather than installing ineffective rules on a different firewall backend.
-ipt -S DOCKER-USER >/dev/null
 # Do not flush any existing chains. Each rule is scoped to this subnet.
 for destination in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4 "$subnet"; do
   add DOCKER-USER -s "$subnet" -d "$destination" -j REJECT

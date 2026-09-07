@@ -1,8 +1,9 @@
 import httpProxy from 'http-proxy'
 import http from 'node:http'
+import { createHash } from 'node:crypto'
 import { config } from './config.js'
 import { getInstanceBySlug, getInstanceByHostPort, touchInstanceRequest, updateInstanceUnlessDeleting, userForSession } from './db.js'
-import { startContainer, containerRunning, waitHealthy } from './orchestrator.js'
+import { startContainer, containerRunning, dshWebToken, waitHealthy } from './orchestrator.js'
 import { SESSION_COOKIE } from './auth.js'
 import { instanceHostPort, trustedInstanceRequest } from './routing.js'
 
@@ -21,9 +22,9 @@ export function closeUserSockets(userId) {
 }
 
 // The browser-to-portal hop carries gateway credentials and identity metadata.
-// None of those values belong on the portal-to-tenant hop. Removing Cookie is
-// intentional: dsh does not use browser cookies, while forwarding the parent-
-// domain portal_session would expose a bearer token to the tenant container.
+// None of those values belong on the portal-to-tenant hop. The parent-domain
+// portal_session is never forwarded; only the target DSH authority's dedicated
+// authentication cookie is allowed through.
 const STRIPPED_REQUEST_HEADERS = [
   'cookie', 'authorization', 'proxy-authorization', 'origin', 'x-csrf-token',
   'cf-access-jwt-assertion', 'cf-connecting-ip', 'cf-ipcountry', 'cf-ray',
@@ -31,18 +32,54 @@ const STRIPPED_REQUEST_HEADERS = [
   'x-forwarded-user', 'x-forwarded-email',
 ]
 
+const DSH_AUTH_COOKIE_NAME = /^dsh-auth-[A-Za-z0-9_-]{43}$/
+const DSH_AUTH_COOKIE_VALUE = /^[A-Za-z0-9._~-]+$/
+
+function dshAuthCookieName(authority) {
+  return `dsh-auth-${createHash('sha256').update(authority).digest('base64url')}`
+}
+
+function dshAuthCookies(cookieHeader, expectedName) {
+  const cookies = []
+  for (const part of String(cookieHeader ?? '').split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    const name = part.slice(0, eq).trim()
+    const value = part.slice(eq + 1).trim()
+    if (name === expectedName && DSH_AUTH_COOKIE_NAME.test(name) && DSH_AUTH_COOKIE_VALUE.test(value)) {
+      cookies.push(`${name}=${value}`)
+    }
+  }
+  return cookies
+}
+
 function hardenProxyRequest(proxyReq, req) {
   const hasValidatedOrigin = req.headers.origin !== undefined
+  const authority = String(proxyReq.getHeader('host'))
+  const allowedCookies = dshAuthCookies(req.headers.cookie, dshAuthCookieName(authority))
   for (const name of STRIPPED_REQUEST_HEADERS) proxyReq.removeHeader(name)
+  if (allowedCookies.length > 0) proxyReq.setHeader('cookie', allowedCookies.join('; '))
   // The outer request has already passed the exact tenant Origin check. DSH
   // sees the proxy target as its Host, so give same-origin-protected plugins a
   // matching internal Origin without forwarding the browser-visible origin.
   if (hasValidatedOrigin) proxyReq.setHeader('origin', `http://${proxyReq.getHeader('host')}`)
 }
 
-function stripUpstreamCookies(headers) {
+function filterUpstreamCookies(headers, expectedName) {
   if (!headers) return
-  delete headers['set-cookie']
+  const raw = headers['set-cookie']
+  const values = Array.isArray(raw) ? raw : raw ? [raw] : []
+  const allowed = values.map((value) => {
+    const pair = String(value).split(';', 1)[0]
+    const eq = pair.indexOf('=')
+    if (eq === -1) return null
+    const name = pair.slice(0, eq).trim()
+    const cookieValue = pair.slice(eq + 1).trim()
+    if (name !== expectedName || !DSH_AUTH_COOKIE_NAME.test(name) || !DSH_AUTH_COOKIE_VALUE.test(cookieValue)) return null
+    return `${name}=${cookieValue}; Path=/; HttpOnly; SameSite=Strict`
+  }).filter(Boolean)
+  if (allowed.length > 0) headers['set-cookie'] = allowed
+  else delete headers['set-cookie']
   delete headers['set-cookie2']
 }
 
@@ -52,10 +89,15 @@ proxy.on('proxyReqWs', (proxyReq, req) => {
   // http-proxy writes both successful 101 and rejected/non-upgrade handshake
   // headers after these listeners. Registering here removes Set-Cookie before
   // either response path reaches the browser.
-  proxyReq.once('upgrade', (proxyRes) => stripUpstreamCookies(proxyRes.headers))
-  proxyReq.once('response', (proxyRes) => stripUpstreamCookies(proxyRes.headers))
+  const hostPort = instanceHostPort(req.socket.localPort)
+  const expectedName = dshAuthCookieName(`127.0.0.1:${hostPort}`)
+  proxyReq.once('upgrade', (proxyRes) => filterUpstreamCookies(proxyRes.headers, expectedName))
+  proxyReq.once('response', (proxyRes) => filterUpstreamCookies(proxyRes.headers, expectedName))
 })
-proxy.on('proxyRes', (proxyRes) => stripUpstreamCookies(proxyRes.headers))
+proxy.on('proxyRes', (proxyRes, req) => {
+  const hostPort = instanceHostPort(req.socket.localPort)
+  filterUpstreamCookies(proxyRes.headers, dshAuthCookieName(`127.0.0.1:${hostPort}`))
+})
 
 proxy.on('error', (err, _req, res) => {
   console.error('[proxy] upstream error:', err?.message ?? err)
@@ -205,6 +247,18 @@ export function setupProxy(fastify) {
       return reply
     }
     touchInstanceRequest(slug)
+    const requestUrl = new URL(req.raw.url ?? '/', 'http://portal.invalid')
+    const bootstrapRequested = requestUrl.searchParams.get('portal_bootstrap') === '1'
+    const expectedCookieName = dshAuthCookieName(`127.0.0.1:${current.host_port}`)
+    if (req.raw.method === 'GET' && requestUrl.pathname === '/'
+        && (bootstrapRequested || dshAuthCookies(req.raw.headers.cookie, expectedCookieName).length === 0)) {
+      const token = await dshWebToken(current.container_name)
+      if (!token) {
+        reply.code(503).type('text/plain').send('instance authentication is not ready, try again in a moment')
+        return reply
+      }
+      req.raw.url = `/?token=${encodeURIComponent(token)}`
+    }
     reply.hijack()
     proxy.web(req.raw, reply.raw, { target: `http://127.0.0.1:${current.host_port}` })
   })

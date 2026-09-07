@@ -14,15 +14,19 @@ let failInstall = false
 let failRemove = false
 let holdInstall
 let inventory = []
+let installedDefaults = []
 const objects = new Map()
 mock.module('../src/docker.js', { namedExports: {
   docker: async (args) => {
     calls.push(args)
     if (args[0] === 'run' && args.includes('--name')) objects.set(args[args.indexOf('--name') + 1], { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: true } })
     if (args[0] === 'rm') objects.delete(args.at(-1))
-    if (args[0] === 'exec' && args.includes('flock')) {
+    if (args[0] === 'run' && args.includes('flock')) {
       if (holdInstall) await holdInstall
       if (failInstall) throw new Error('upstream SECRET install failure')
+      const spec = args.at(-1)
+      if (args.includes('dsh') && spec === 'dshmarket') installedDefaults = [{ name: 'dshmarket', version: '1.41.0', source: '^1.41.0' }]
+      if (args.includes('dsh') && spec === '@wsz987/dsh-channels@0.4.1') installedDefaults = [{ name: '@wsz987/dsh-channels', version: '0.4.1', source: '^0.4.1' }]
     }
     if (args[0] === 'run' && args.includes('remove')) {
       if (failRemove) throw new Error('upstream SECRET remove failure')
@@ -30,9 +34,9 @@ mock.module('../src/docker.js', { namedExports: {
     }
     if (args[0] === 'stop') objects.get(args.at(-1)).State.Running = false
     if (args[0] === 'start') objects.get(args.at(-1)).State.Running = true
-    const stdout = args[0] === 'exec' && args.includes('node')
-      ? '[{"name":"dshmarket","version":"1.41.0"}]'
-      : args[0] === 'run' && args.includes('node') ? JSON.stringify(inventory) : ''
+    const stdout = args[0] === 'run' && args.includes('node')
+      ? args.includes('dsh.portal.helper=plugin-install') ? JSON.stringify(installedDefaults) : JSON.stringify(inventory)
+      : ''
     return { stdout, stderr: '' }
   },
   inspectObject: async (kind, name) => kind === 'image' ? {} : objects.get(name) ?? null,
@@ -57,6 +61,7 @@ test.beforeEach(() => {
     { name: 'dsh-context', version: '0.41.3', source: '^0.41.3', enabled: true },
     { name: 'dshmarket', version: '1.41.0', source: '^1.41.0', enabled: true },
   ]
+  installedDefaults = []
   userId = Number(createUser({ username: 'plugin-user', name: 'Plugin user' }))
   id = Number(createInstanceRow({ userId, slug: 'plugin-user', containerName: 'dsh-plugin-user', hostPort: healthy.address().port }))
   objects.set('dsh-plugin-user', { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: true } })
@@ -81,7 +86,7 @@ test('HTTPS tarball defaults are passed to the DSH CLI and inventory is read fro
   await provision(id)
   const install = calls.find((args) => args.includes('flock'))
   assert.equal(install.at(-1), source)
-  const inspect = calls.find((args) => args[0] === 'exec' && args.includes('node'))
+  const inspect = calls.find((args) => args[0] === 'run' && args.includes('dsh.portal.helper=plugin-install') && args.includes('node'))
   assert.ok(!inspect.includes(source))
   assert.equal(plugins.pluginState(id).state, 'completed')
 })
@@ -94,10 +99,33 @@ test('new instance installs defaults before completion; re-provision preserves v
   const install = calls.find((args) => args.includes('flock'))
   assert.deepEqual(install.slice(-7), ['dsh', 'plugin', '--profile', 'web', 'add', '-w', 'dshmarket'])
   assert.ok(install.includes('1000:1000') && install.includes('300s'))
-  assert.ok(calls.some((args) => args[0] === 'restart'))
+  assert.ok(calls.some((args) => args[0] === 'stop'))
+  assert.ok(calls.some((args) => args[0] === 'start'))
   await provision(id)
   assert.equal(calls.filter((args) => args.includes('flock')).length, 1)
   assert.ok(!calls.some((args) => args[0] === 'volume'))
+})
+
+test('plugin installation uses an offline helper mounted to the stopped instance home', async () => {
+  plugins.savePluginDefaults('dsh plugin --profile web add -w @wsz987/dsh-channels@0.4.1')
+  await provision(id)
+  const installs = calls.filter((args) => args.includes('flock'))
+  assert.equal(installs.length, 1)
+  assert.equal(installs[0][0], 'run')
+  assert.ok(installs[0].includes('dsh.portal.helper=plugin-install'))
+  assert.ok(installs[0].includes('type=volume,src=dsh-plugin-user-home,dst=/home/dsh'))
+  assert.equal(installs[0][installs[0].indexOf('--workdir') + 1], '/home/dsh/.dsh/profiles/web')
+  assert.deepEqual(installs[0].slice(-7), ['dsh', 'plugin', '--profile', 'web', 'add', '-w', '@wsz987/dsh-channels@0.4.1'])
+})
+
+test('already installed package versions and tarball sources are not fetched again', async () => {
+  installedDefaults = [
+    { name: '@wsz987/dsh-channels', version: '0.4.1', source: '^0.4.1' },
+    { name: 'dsh-cron', version: '0.12.1', source: 'https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz' },
+  ]
+  await plugins.installPluginCommands('dsh-plugin-user', `dsh plugin --profile web add -w @wsz987/dsh-channels@0.4.1
+dsh plugin --profile web add -w https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz`)
+  assert.equal(calls.filter((args) => args.includes('flock')).length, 0)
 })
 
 test('failed install reports a sanitized retryable result and does not restart a working instance', async () => {
@@ -124,11 +152,14 @@ test('duplicate submissions are coalesced and stop waits until installation and 
   holdInstall = new Promise((resolve) => { release = resolve })
   const work = plugins.queuePluginInstalls([id, id])
   while (!calls.some((args) => args.includes('flock'))) await new Promise((resolve) => setTimeout(resolve, 1))
+  assert.equal(calls.filter((args) => args[0] === 'stop').length, 1)
   const stop = stopContainer('dsh-plugin-user')
-  assert.ok(!calls.some((args) => args[0] === 'stop'))
+  await new Promise((resolve) => setTimeout(resolve, 1))
+  assert.equal(calls.filter((args) => args[0] === 'stop').length, 1)
   release(); await work; await stop
   assert.equal(calls.filter((args) => args.includes('flock')).length, 1)
-  assert.ok(calls.findIndex((args) => args[0] === 'restart') < calls.findIndex((args) => args[0] === 'stop'))
+  assert.equal(calls.filter((args) => args[0] === 'stop').length, 2)
+  assert.ok(calls.findIndex((args) => args[0] === 'start') < calls.findLastIndex((args) => args[0] === 'stop'))
 })
 
 test('deleted instances are skipped and interrupted persisted jobs require explicit retry', async () => {

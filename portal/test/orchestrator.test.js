@@ -1,5 +1,6 @@
 import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
+import http from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,9 +12,11 @@ const objects = new Map()
 let removalFailure = false
 let active = 0
 let maxActive = 0
+let dockerLogs = ''
 mock.module('../src/docker.js', { namedExports: {
   docker: async (args) => {
     calls.push(args)
+    if (args[0] === 'logs') return { stdout: dockerLogs, stderr: '' }
     if (args[0] === 'rm') objects.delete(`container:${args.at(-1)}`)
     if (args[0] === 'volume' && args[1] === 'rm') {
       if (removalFailure) throw new Error('volume is in use')
@@ -31,7 +34,7 @@ mock.module('../src/docker.js', { namedExports: {
   ensureNetwork: async () => ({}),
   applyFirewall: async () => {},
 } })
-const { createContainer, removeContainerKeepVolumes, removeContainer, restartContainer, startContainer, stopContainer } = await import('../src/orchestrator.js')
+const { createContainer, dshWebToken, removeContainerKeepVolumes, removeContainer, restartContainer, startContainer, stopContainer, waitHealthy } = await import('../src/orchestrator.js')
 const { db } = await import('../src/db.js')
 
 test('creation uses Docker-compatible logging, limits, loopback publication and private volumes', async () => {
@@ -62,6 +65,26 @@ test('lifecycle operations on the same tenant remain serialized', async () => {
   assert.equal(maxActive, 1)
   const restart = calls.find((args) => args[0] === 'restart')
   assert.deepEqual(restart, ['restart', '-t', '15', 'dsh-alice'])
+})
+
+test('token-protected DSH endpoints are considered ready', async () => {
+  const server = http.createServer((_req, res) => res.writeHead(401).end())
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const { port } = server.address()
+    assert.equal(await waitHealthy(port, 100), true)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('DSH bootstrap token is read from the latest canonical startup log', async () => {
+  const oldToken = 'a'.repeat(43)
+  const currentToken = 'b'.repeat(43)
+  dockerLogs = `dsh web: http://127.0.0.1:3000/?token=${oldToken} (LAN: http://172.20.0.2:3000/?token=${oldToken})\n`
+    + `ignored token=${'c'.repeat(43)}\n`
+    + `dsh web: http://127.0.0.1:3000/?token=${currentToken} (LAN: http://172.20.0.2:3000/?token=${currentToken})\n`
+  assert.equal(await dshWebToken('dsh-alice'), currentToken)
 })
 
 test.after(() => {

@@ -20,7 +20,7 @@ const running = new Set()
 mock.module('../src/orchestrator.js', { namedExports: {
   allocatePort: async () => { await new Promise((r) => setTimeout(r, 5)); if (full) throw new Error('full'); return port++ },
   containerName: (slug) => `dsh-${slug}`, containerRunning: async (name) => running.has(name), waitHealthy: async () => true,
-  containerLogs: async () => '', provision: async (id) => { provisioned.push(id) },
+  containerLogs: async () => '', dshWebToken: async () => 't'.repeat(43), provision: async (id) => { provisioned.push(id) },
   removeContainer: async () => {}, restartContainer: async (name) => { restarted.push(name); running.add(name) },
   scanInstancePlugins: async () => ({ plugins: [], updatedAt: Date.now() }),
   startContainer: async () => {}, stopContainer: async () => {}, verifyDockerRuntime: async () => {},
@@ -110,9 +110,11 @@ test('users can restart only their own instance and administrators can restart a
   assert.equal((await post('/api/instance/restart', {}, { cookie: userCookie })).status, 403)
   assert.equal((await post('/api/instance/restart', {}, { cookie: userCookie, 'x-csrf-token': userSession.csrfToken })).status, 200)
   assert.equal(restarted.at(-1), instance.container_name)
+  assert.ok(db.prepare('SELECT last_active FROM instances WHERE id=?').get(instance.id).last_active >= instance.created_at)
   assert.equal((await post(`/api/admin/instances/${instance.id}/restart`, {}, { cookie: userCookie, 'x-csrf-token': userSession.csrfToken })).status, 403)
   assert.equal((await post(`/api/admin/instances/${instance.id}/restart`, {}, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken })).status, 200)
   assert.equal(restarted.at(-1), instance.container_name)
+  assert.ok(db.prepare('SELECT last_active FROM instances WHERE id=?').get(instance.id).last_active >= instance.created_at)
 })
 
 for (const contentType of ['application/json', 'application/x-www-form-urlencoded']) {

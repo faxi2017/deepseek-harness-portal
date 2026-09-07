@@ -245,6 +245,11 @@ function fmtNum(n) {
   return String(n)
 }
 function instanceUrl(instance) { return instance.url }
+function instanceLaunchUrl(instance) {
+  const url = new URL(instance.url)
+  url.searchParams.set('portal_bootstrap', '1')
+  return url.href
+}
 
 function pluginInventoryHtml(data, admin = false) {
   const note = data.scanError
@@ -411,7 +416,7 @@ async function renderUser() {
     const url = instanceUrl(instance)
     $('#i-url').textContent = url
     $('#i-url').href = url
-    $('#i-launch').href = url
+    $('#i-launch').href = instanceLaunchUrl(instance)
     $('#i-requests').textContent = fmtNum(instance.request_count ?? 0)
     $('#i-active').textContent = relTime(instance.last_active)
     myDshReleases = releases
@@ -504,7 +509,7 @@ function drawInstances() {
         <td>${fmtNum(i.request_count ?? 0)}</td>
         <td>${relTime(i.last_active)}</td>
         <td><div class="cell-actions">
-          <a class="btn btn-ghost btn-sm" href="${url}" target="_blank" rel="noopener">${icon('external', 14)} 进入</a>
+          <a class="btn btn-ghost btn-sm" href="${instanceLaunchUrl(i)}" target="_blank" rel="noopener">${icon('external', 14)} 进入</a>
           <button class="btn btn-ghost btn-sm" data-act="logs" data-id="${i.id}">${icon('terminal', 14)} 日志</button>
           <button class="btn btn-ghost btn-sm" data-act="plugins" data-id="${i.id}">${icon('sliders', 14)} 插件</button>
           <button class="btn btn-ghost btn-sm" data-act="restart" data-id="${i.id}">${icon('refresh', 14)} 重启服务</button>

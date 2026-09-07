@@ -1,5 +1,6 @@
 import { db, getSetting, setSetting, getInstanceById } from './db.js'
 import { docker } from './docker.js'
+import { config } from './config.js'
 
 db.exec(`CREATE TABLE IF NOT EXISTS instance_plugins (
   instance_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, commands TEXT NOT NULL,
@@ -96,20 +97,39 @@ export function recoverPluginJobs() {
 
 const inspectInstalled = `const fs=require('fs');const path=require('path');
 const root='/home/dsh/.dsh/profiles/web';const p=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));const bundles=new Set(p.dsh?.profile?.bundles??[]);const result=[];
-for(const name of bundles){try{const m=JSON.parse(fs.readFileSync(path.join(root,'node_modules',name,'package.json'),'utf8'));if(p.dependencies?.[name]&&m.dsh?.bundle?.patch)result.push({name,version:m.version})}catch{}}
+for(const name of bundles){try{const m=JSON.parse(fs.readFileSync(path.join(root,'node_modules',name,'package.json'),'utf8'));if(p.dependencies?.[name]&&m.dsh?.bundle?.patch)result.push({name,version:m.version,source:p.dependencies[name]})}catch{}}
 console.log(JSON.stringify(result));`
+
+function pluginInstalled(plugin, installed) {
+  if (!plugin.name) return installed.some((item) => item.source === plugin.spec)
+  const current = installed.find((item) => item.name === plugin.name)
+  if (!current) return false
+  const requested = plugin.spec.slice(plugin.name.length).replace(/^@/, '')
+  return !requested || requested === current.version
+}
 
 export async function installPluginCommands(name, commands) {
   const plugins = parsePluginCommands(commands)
+  const helper = (entrypoint, args, { readOnly = false } = {}) => docker([
+    'run', '--rm', '--network', readOnly ? 'none' : config.instanceNetwork,
+    '--user', '1000:1000', '--label', 'dsh.portal.helper=plugin-install',
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only',
+    '--mount', `type=volume,src=${name}-home,dst=/home/dsh${readOnly ? ',readonly' : ''}`,
+    '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--workdir', '/home/dsh/.dsh/profiles/web',
+    '-e', 'HOME=/home/dsh', '-e', 'DSH_HOME=/home/dsh/.dsh', '-e', 'CI=true',
+    '--entrypoint', entrypoint, config.image, ...args,
+  ], { timeout: 330000 })
+  let { stdout } = await helper('node', ['-e', inspectInstalled], { readOnly: true })
+  const installed = JSON.parse(stdout)
   for (const plugin of plugins) {
+    if (pluginInstalled(plugin, installed)) continue
     // No shell or user-supplied flags. The in-container timeout also bounds work
     // if the Portal process exits; flock rejects overlapping installs on retry.
-    await docker(['exec', '--user', '1000:1000', '-e', 'CI=true', name,
-      'flock', '-n', '/home/dsh/.dsh/portal-plugin-install.lock',
+    await helper('flock', ['-n', '/home/dsh/.dsh/portal-plugin-install.lock',
       'timeout', '--signal=TERM', '--kill-after=10s', '300s',
-      'dsh', 'plugin', '--profile', 'web', 'add', '-w', plugin.spec], { timeout: 330000 })
+      'dsh', 'plugin', '--profile', 'web', 'add', '-w', plugin.spec])
   }
-  const { stdout } = await docker(['exec', '--user', '1000:1000', name, 'node', '-e', inspectInstalled])
+  ;({ stdout } = await helper('node', ['-e', inspectInstalled], { readOnly: true }))
   return JSON.parse(stdout)
 }
 

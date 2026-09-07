@@ -136,6 +136,14 @@ PORT_RANGE_END=18100
 bash run-portal.sh
 ```
 
+手动停止或后台重启：
+
+```bash
+bash stop-portal.sh
+nohup bash run-portal.sh > /tmp/dsh-portal.log 2>&1 < /dev/null &
+tail -n 80 /tmp/dsh-portal.log
+```
+
 Windows 浏览器打开 `http://10.0.9.175:7000`。第一个注册用户通常得到 `http://10.0.9.175:7001`，下一个是 `7002`；被占用的内部端口会跳过，不保证始终连续。管理员可从 Instances 的 Open 按钮进入实例。
 
 确认成功后 Ctrl+C，安装仓库中的 systemd 服务：

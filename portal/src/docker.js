@@ -68,7 +68,8 @@ export async function applyFirewall(network) {
     gatewayArgs.push(ip, String(config.gatewayPort))
   }
   await docker(['run', '--rm', '--network', 'host', '--user', '0:0',
-    '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--security-opt', 'no-new-privileges',
-    '--read-only', '-v', `${fileURLToPath(new URL('../../image/tenant-firewall.sh', import.meta.url))}:/opt/dsh/tenant-firewall.sh:ro`,
+    '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW', '--security-opt', 'no-new-privileges',
+    '--read-only', '--tmpfs', '/run:rw,nosuid,nodev,noexec,size=64k',
+    '-v', `${fileURLToPath(new URL('../../image/tenant-firewall.sh', import.meta.url))}:/opt/dsh/tenant-firewall.sh:ro`,
     '--entrypoint', '/bin/bash', config.image, '/opt/dsh/tenant-firewall.sh', subnet, ...gatewayArgs])
 }

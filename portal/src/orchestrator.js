@@ -106,6 +106,11 @@ export function uninstallInstancePlugin(instanceId, packageName) {
         'dsh', 'plugin', '--profile', 'web', 'remove', packageName,
       ], { timeout: 330000 })
       const inventory = await scanPluginsUnlocked(current)
+      const previousPlugins = pluginState(current.id)
+      if (previousPlugins) {
+        recordPluginState(current.id, previousPlugins, previousPlugins.state,
+          `已手动卸载 ${packageName}；如需恢复默认插件，请由管理员重新下发。`, inventory.plugins)
+      }
       if (object) {
         await startContainerUnlocked(current.container_name)
         const healthy = await waitHealthy(current.host_port, config.instanceStartTimeoutMs, current.container_name)

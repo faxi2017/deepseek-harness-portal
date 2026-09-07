@@ -72,11 +72,6 @@ export function recordPluginInventory(id, plugins) {
     .run(id, JSON.stringify(normalized), updatedAt)
   return { plugins: normalized, updatedAt }
 }
-export function protectedPluginNames() {
-  const names = new Set(['dshmarket'])
-  for (const plugin of parsePluginCommands(pluginDefaults().commands)) if (plugin.name) names.add(plugin.name)
-  return names
-}
 export const pluginsBusy = () => Boolean(db.prepare("SELECT 1 FROM instance_plugins WHERE state IN ('queued','running') LIMIT 1").get())
 export function savePluginDefaults(commands) {
   const normalized = parsePluginCommands(commands).map((p) => p.command).join('\n')

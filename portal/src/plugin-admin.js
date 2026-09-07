@@ -1,15 +1,14 @@
 import { listInstancesWithUsers, getInstanceById, getInstanceByUserId } from './db.js'
 import {
-  pluginDefaults, pluginInventory, protectedPluginNames, savePluginDefaults,
+  pluginDefaults, pluginInventory, savePluginDefaults,
   pluginState, pluginsBusy, queuePluginInstalls, validPluginName,
 } from './plugins.js'
 import { scanInstancePlugins, uninstallInstancePlugin } from './orchestrator.js'
 
 function inventoryPayload(instanceId, inventory, scanError = '') {
-  const protectedNames = protectedPluginNames()
   return {
     instanceId,
-    plugins: inventory.plugins.map((plugin) => ({ ...plugin, protected: protectedNames.has(plugin.name) })),
+    plugins: inventory.plugins,
     updatedAt: inventory.updatedAt,
     stale: Boolean(scanError),
     scanError,
@@ -28,7 +27,6 @@ async function readInventory(instanceId, refresh) {
 
 async function removePlugin(instanceId, packageName) {
   if (!validPluginName(packageName)) return { status: 400, error: '插件名称格式不正确。' }
-  if (protectedPluginNames().has(packageName)) return { status: 400, error: '平台默认插件不能在救援页面卸载。' }
   let current
   try { current = await scanInstancePlugins(instanceId) }
   catch { return { status: 409, error: '当前无法读取插件清单，请稍后重试。' } }

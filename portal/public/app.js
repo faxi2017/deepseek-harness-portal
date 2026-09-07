@@ -259,11 +259,11 @@ function pluginInventoryHtml(data, admin = false) {
     <td class="cell-mono">${escapeHtml(plugin.name)}</td>
     <td>${escapeHtml(plugin.version || '未知')}</td>
     <td>${plugin.enabled ? '已启用' : '未启用'}</td>
-    <td>${plugin.protected ? '平台默认插件' : `<button class="btn btn-danger btn-sm" data-uninstall-plugin="${escapeHtml(plugin.name)}">卸载并重启</button>`}</td>
+    <td><button class="btn btn-danger btn-sm" data-uninstall-plugin="${escapeHtml(plugin.name)}">卸载并重启</button></td>
   </tr>`).join('')
   return `${note}<div class="cell-actions"><button class="btn btn-ghost btn-sm" data-refresh-plugins>重新读取插件清单</button></div>
     ${rows ? `<div class="table-wrap"><table><thead><tr><th>插件</th><th>版本</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="empty">${data.updatedAt ? '没有检测到第三方插件。' : '尚无插件记录，请点击“重新读取插件清单”。'}</p>`}
-    <p class="hint">卸载会短暂停止并重新启动${admin ? '该用户的' : '你的'}实例；工作文件、会话和模型配置不会删除。平台默认插件需由管理员统一维护。</p>`
+    <p class="hint">卸载会短暂停止并重新启动${admin ? '该用户的' : '你的'}实例；工作文件、会话和模型配置不会删除。即使它属于默认插件，也可以在这里卸载；管理员重新下发默认插件时才会恢复。</p>`
 }
 
 // ---- views ----

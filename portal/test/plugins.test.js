@@ -189,6 +189,8 @@ test('admin validates commands and targets; clearing defaults does not run unins
 })
 
 test('plugin rescue reads a stopped-safe home volume, records inventory, uninstalls one package and restarts', async () => {
+  plugins.savePluginDefaults('dsh plugin --profile web add dshmarket')
+  plugins.recordPluginState(id, plugins.pluginDefaults(), 'completed', '已安装并启用', inventory)
   const scanned = await scanInstancePlugins(id)
   assert.deepEqual(scanned.plugins.map((plugin) => plugin.name), ['dsh-context', 'dshmarket'])
   assert.equal(plugins.pluginInventory(id).plugins.length, 2)
@@ -202,18 +204,25 @@ test('plugin rescue reads a stopped-safe home volume, records inventory, uninsta
   assert.deepEqual(helper.slice(-6), ['dsh', 'plugin', '--profile', 'web', 'remove', 'dsh-context'])
   assert.ok(calls.findIndex((args) => args[0] === 'stop') < calls.indexOf(helper))
   assert.ok(calls.indexOf(helper) < calls.findIndex((args) => args[0] === 'start'))
+  assert.deepEqual(JSON.parse(plugins.pluginState(id).installed).map((plugin) => plugin.name), ['dshmarket'])
+  assert.match(plugins.pluginState(id).message, /已手动卸载 dsh-context/)
 })
 
-test('users manage only their own inventory; protected defaults and failed removals retain the snapshot', async () => {
+test('users and admins can remove any installed plugin; invalid and failed removals retain the snapshot', async () => {
   const userGet = await admin.inject({ url: '/api/profile/plugins?refresh=1', headers: { authorization: 'user' } })
   assert.equal(userGet.statusCode, 200)
-  assert.equal(userGet.json().plugins.find((plugin) => plugin.name === 'dshmarket').protected, true)
+  assert.equal(userGet.json().plugins.find((plugin) => plugin.name === 'dshmarket').protected, undefined)
   const userPost = (packageName) => admin.inject({ method: 'POST', url: '/api/profile/plugins/uninstall', headers: { authorization: 'user' }, payload: { packageName } })
-  assert.equal((await userPost('dshmarket')).statusCode, 400)
+  assert.equal((await userPost('dshmarket')).statusCode, 200)
+  assert.ok(!plugins.pluginInventory(id).plugins.some((plugin) => plugin.name === 'dshmarket'))
   assert.equal((await userPost('../escape')).statusCode, 400)
   failRemove = true
   assert.equal((await userPost('dsh-context')).statusCode, 500)
   assert.ok(plugins.pluginInventory(id).plugins.some((plugin) => plugin.name === 'dsh-context'))
   assert.equal((await admin.inject({ url: `/api/admin/plugins/inventory?instanceId=${id}&refresh=1`, headers: { authorization: 'admin' } })).statusCode, 200)
   assert.equal((await admin.inject({ method: 'POST', url: '/api/admin/plugins/uninstall', headers: { authorization: 'user' }, payload: { instanceId: id, packageName: 'dsh-context' } })).statusCode, 403)
+  failRemove = false
+  const adminRemove = await admin.inject({ method: 'POST', url: '/api/admin/plugins/uninstall', headers: { authorization: 'admin' }, payload: { instanceId: id, packageName: 'dsh-context' } })
+  assert.equal(adminRemove.statusCode, 200)
+  assert.deepEqual(adminRemove.json().plugins, [])
 })

@@ -108,7 +108,7 @@ export function uninstallInstancePlugin(instanceId, packageName) {
       const inventory = await scanPluginsUnlocked(current)
       if (object) {
         await startContainerUnlocked(current.container_name)
-        const healthy = await waitHealthy(current.host_port, config.instanceStartTimeoutMs)
+        const healthy = await waitHealthy(current.host_port, config.instanceStartTimeoutMs, current.container_name)
         updateInstanceUnlessDeleting(current.id, healthy
           ? { status: 'running', error: null, last_active: Date.now() }
           : { status: 'failed', error: '插件卸载完成，但实例健康检查仍未通过。' })
@@ -319,7 +319,7 @@ async function restorePreviousRelease(inst, previousRelease, volumes, backups, p
   await removeExistingContainerUnlocked(inst.container_name)
   await restoreVolumeBackup(volumes, backups, previousRelease.image_id, inst.container_name)
   await createContainerUnlocked({ slug: inst.slug, hostPort: inst.host_port, image: previousRelease.image_id })
-  const healthy = await waitHealthy(inst.host_port, config.instanceStartTimeoutMs)
+  const healthy = await waitHealthy(inst.host_port, config.instanceStartTimeoutMs, inst.container_name)
   if (!healthy) {
     await stopContainerUnlocked(inst.container_name).catch(() => {})
     return false
@@ -396,7 +396,7 @@ async function runDshUpgrade(upgradeId, { restoreFromUpgradeId = null } = {}) {
         }, previousRelease.image_id, name)
       }
       await createContainerUnlocked({ slug: current.slug, hostPort: current.host_port, image: targetRelease.image_id })
-      if (!(await waitHealthy(current.host_port, config.instanceStartTimeoutMs))) throw new Error('candidate health check failed')
+      if (!(await waitHealthy(current.host_port, config.instanceStartTimeoutMs, current.container_name))) throw new Error('candidate health check failed')
       updateInstanceUnlessDeleting(current.id, {
         release_id: targetRelease.id, status: 'running', error: null, last_active: Date.now(),
       })
@@ -431,7 +431,7 @@ async function runDshUpgrade(upgradeId, { restoreFromUpgradeId = null } = {}) {
         let resumed = true
         if (stoppedForBackup) {
           await startContainerUnlocked(name).catch(() => { resumed = false })
-          if (resumed) resumed = await waitHealthy(current.host_port, config.instanceStartTimeoutMs)
+          if (resumed) resumed = await waitHealthy(current.host_port, config.instanceStartTimeoutMs, current.container_name)
         }
         updateInstanceUnlessDeleting(current.id, resumed
           ? { status: priorStatus, error: null }
@@ -556,24 +556,33 @@ function isPortFree(port) {
 }
 
 /** Poll until DSH's core LLM route is registered, not merely its HTTP server. */
-export async function waitHealthy(hostPort, timeoutMs) {
+function probeStatus(options, body) {
+  return new Promise((resolve) => {
+    const req = http.request(options, (res) => {
+      res.resume()
+      resolve(res.statusCode)
+    })
+    req.once('error', () => resolve(0))
+    req.once('timeout', () => req.destroy(new Error('health check timeout')))
+    req.end(body)
+  })
+}
+
+export async function waitHealthy(hostPort, timeoutMs, containerName = null) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const healthy = await new Promise((resolve) => {
-      const req = http.request({
+    const status = await probeStatus({
         host: '127.0.0.1', port: hostPort, path: '/api/llm/listProviders', method: 'POST',
         headers: { 'content-type': 'application/json', 'content-length': 2 },
         timeout: Math.min(5000, deadline - Date.now()),
-      }, (res) => {
-        res.resume()
-        // The unauthenticated probe is expected to be challenged. A 404 means
-        // the web server is listening but the core plugin routes are not ready.
-        resolve(res.statusCode === 200 || res.statusCode === 401)
-      })
-      req.once('error', () => resolve(false))
-      req.once('timeout', () => req.destroy(new Error('health check timeout')))
-      req.end('{}')
-    })
+      }, '{}')
+    let healthy = status === 200 || status === 401
+    // DSH 0.1.1 has neither browser tokens nor the llm/listProviders RPC.
+    // Only accept its root as a legacy signal when this container has no token.
+    if (!healthy && status === 404 && containerName && !(await dshWebToken(containerName))) {
+      healthy = await probeStatus({ host: '127.0.0.1', port: hostPort, path: '/', method: 'GET',
+        timeout: Math.min(5000, deadline - Date.now()) }) === 200
+    }
     if (healthy) return true
     if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, Math.min(2000, deadline - Date.now())))
   }
@@ -595,7 +604,7 @@ export async function provision(instanceId, { setDefaultModel = false } = {}) {
       const image = release?.image_id ?? config.image
       await ensureImage(image)
       await createContainerUnlocked({ slug: inst.slug, hostPort: inst.host_port, image })
-      const healthy = await waitHealthy(inst.host_port, config.instanceStartTimeoutMs)
+      const healthy = await waitHealthy(inst.host_port, config.instanceStartTimeoutMs, inst.container_name)
 
       // Deletion may set its tombstone while health polling is in progress.
       const current = getInstanceById(instanceId)
@@ -643,7 +652,7 @@ async function applyPluginsUnlocked(inst, policy) {
     const installed = await installPluginCommands(inst.container_name, policy.commands)
     if (getInstanceById(inst.id)?.status === 'deleting') throw new Error('deleting')
     await startContainerUnlocked(inst.container_name)
-    if (!(await waitHealthy(inst.host_port, config.instanceStartTimeoutMs))) {
+    if (!(await waitHealthy(inst.host_port, config.instanceStartTimeoutMs, inst.container_name))) {
       updateInstanceUnlessDeleting(inst.id, { status: 'failed', error: '插件安装后实例健康检查失败，请检查插件兼容性。' })
       throw new Error('unhealthy')
     }
@@ -653,7 +662,7 @@ async function applyPluginsUnlocked(inst, policy) {
     try {
       container = await inspectObject('container', inst.container_name)
       if (container && !container.State.Running) await startContainerUnlocked(inst.container_name)
-      if (container && await waitHealthy(inst.host_port, config.instanceStartTimeoutMs)) {
+      if (container && await waitHealthy(inst.host_port, config.instanceStartTimeoutMs, inst.container_name)) {
         updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })
       }
     } catch {}

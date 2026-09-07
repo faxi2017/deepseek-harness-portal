@@ -723,7 +723,7 @@ async function waitUntilRunning(inst) {
   while (Date.now() < deadline) {
     if (await containerRunning(inst.container_name)) {
       const { waitHealthy } = await import('./orchestrator.js')
-      if (await waitHealthy(inst.host_port, 30000)) return
+      if (await waitHealthy(inst.host_port, 30000, inst.container_name)) return
     }
     await new Promise((r) => setTimeout(r, 2000))
   }

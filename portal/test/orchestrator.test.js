@@ -79,6 +79,7 @@ test('token-protected DSH endpoints are considered ready', async () => {
 })
 
 test('health check waits for the core LLM route after the web server starts', async () => {
+  dockerLogs = `dsh web: http://127.0.0.1:3000/?token=${'t'.repeat(43)}\n`
   let probes = 0
   const server = http.createServer((req, res) => {
     assert.equal(req.url, '/api/llm/listProviders')
@@ -88,8 +89,19 @@ test('health check waits for the core LLM route after the web server starts', as
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   try {
     const { port } = server.address()
-    assert.equal(await waitHealthy(port, 2500), true)
+    assert.equal(await waitHealthy(port, 2500, 'dsh-alice'), true)
     assert.equal(probes, 2)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('legacy tokenless DSH uses its HTTP root when the newer RPC is absent', async () => {
+  dockerLogs = ''
+  const server = http.createServer((req, res) => res.writeHead(req.url === '/' ? 200 : 404).end())
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    assert.equal(await waitHealthy(server.address().port, 100, 'dsh-alice'), true)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }

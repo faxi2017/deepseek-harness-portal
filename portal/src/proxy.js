@@ -81,6 +81,7 @@ function relayHtmlWithHostBootstrap(proxyRes, res) {
       const tag = `<script src="${DSH_HOST_BOOTSTRAP_PATH}"></script>`
       body = Buffer.from(html.includes('</head>') ? html.replace('</head>', `${tag}</head>`) : `${tag}${html}`)
       delete headers['content-encoding']
+      delete headers['transfer-encoding']
       headers['content-length'] = String(body.length)
     }
     res.writeHead(proxyRes.statusCode ?? 502, headers)
@@ -183,7 +184,7 @@ async function ensureRunningInner(inst) {
   }
   if (!(await containerRunning(inst.container_name))) return false
   // Wait for the app to serve; a freshly started container isn't ready yet.
-  const healthy = await waitHealthy(inst.host_port, 30000)
+  const healthy = await waitHealthy(inst.host_port, 30000, inst.container_name)
   if (healthy && !updateInstanceUnlessDeleting(inst.id, { status: 'running', error: null })) return false
   return healthy
 }
@@ -282,12 +283,17 @@ export function setupProxy(fastify) {
     if (req.raw.method === 'GET' && requestUrl.pathname === '/'
         && (bootstrapRequested || dshAuthCookies(req.raw.headers.cookie, expectedCookieName).length === 0)) {
       const token = await dshWebToken(current.container_name)
-      if (!token) {
-        reply.code(503).type('text/plain').send('instance authentication is not ready, try again in a moment')
-        return reply
+      // DSH 0.1.2 enables browser-token authentication while 0.1.1 does not.
+      // A missing token is therefore a supported legacy mode, not proof that
+      // the container is still starting. ensureRunning already verified the
+      // core route before requests reach this point.
+      if (token) {
+        req.raw.url = `/?token=${encodeURIComponent(token)}`
+        bootstrapping = true
+      } else if (bootstrapRequested) {
+        requestUrl.searchParams.delete('portal_bootstrap')
+        req.raw.url = `${requestUrl.pathname}${requestUrl.search}`
       }
-      req.raw.url = `/?token=${encodeURIComponent(token)}`
-      bootstrapping = true
     }
     const injectDshHost = req.raw.method === 'GET' && requestUrl.pathname === '/' && !bootstrapping
     req.raw[INJECT_DSH_HOST] = injectDshHost

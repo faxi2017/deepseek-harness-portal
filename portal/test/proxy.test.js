@@ -11,9 +11,10 @@ import cookie from '@fastify/cookie'
 
 const dataDir = mkdtempSync(join(tmpdir(), 'dsh-proxy-test-'))
 process.env.DATA_DIR = dataDir
+let webToken = 't'.repeat(43)
 mock.module('../src/orchestrator.js', { namedExports: {
   startContainer: async () => {}, containerRunning: async () => true, waitHealthy: async () => true,
-  dshWebToken: async () => 't'.repeat(43),
+  dshWebToken: async () => webToken,
 } })
 const { config } = await import('../src/config.js')
 const { db, createUser, createInstanceRow, updateInstance } = await import('../src/db.js')
@@ -33,7 +34,8 @@ test('real port listeners enforce ownership and origins, strip HTTP/WS credentia
     }
     if (req.method === 'GET' && req.url === '/') {
       res.setHeader('content-type', 'text/html; charset=utf-8')
-      res.end('<!doctype html><html><head></head><body>DSH</body></html>')
+      res.write('<!doctype html><html><head></head>')
+      res.end('<body>DSH</body></html>')
       return
     }
     res.setHeader('set-cookie', 'attacker=value')
@@ -73,7 +75,13 @@ test('real port listeners enforce ownership and origins, strip HTTP/WS credentia
     assert.doesNotMatch(bootstrap.headers.get('set-cookie'), /attacker/)
     const page = await fetch(url, { headers: { cookie: `${ownerCookie}; ${dshCookie}` } })
     assert.equal(page.status, 200)
+    assert.equal(page.headers.get('transfer-encoding'), null)
     assert.match(await page.text(), /<script src="\/__portal\/dsh-host\.js"><\/script>/)
+    webToken = null
+    const legacyPage = await fetch(`${url}/?portal_bootstrap=1`, { headers: { cookie: ownerCookie } })
+    assert.equal(legacyPage.status, 200)
+    assert.match(await legacyPage.text(), /<script src="\/__portal\/dsh-host\.js"><\/script>/)
+    webToken = 't'.repeat(43)
     const hostBootstrap = await fetch(`${url}/__portal/dsh-host.js`, { headers: { cookie: ownerCookie } })
     assert.equal(hostBootstrap.status, 200)
     assert.match(await hostBootstrap.text(), /ownsHost:true/)

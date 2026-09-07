@@ -40,6 +40,25 @@ const html = await page.text()
 assert.match(html, /<html|<!doctype/i, 'DSH returns HTML')
 assert.match(html, /__portal\/dsh-host\.js/, 'Portal transport bootstrap is injected')
 
+// A successful document alone can still produce a blank DSH screen when a
+// proxy rejects one of the initial module, plugin, or stylesheet requests.
+// Exercise every same-origin JS/CSS resource advertised by the boot document.
+const resourcePaths = new Set([
+  ...html.matchAll(/\b(?:src|href)="([^"]+\.(?:js|css)(?:\?[^\"]*)?)"/g),
+  ...html.matchAll(/"url":"([^"]+\.js(?:\?[^\"]*)?)"/g),
+].map((match) => match[1])
+  .filter((path) => path.startsWith('/')))
+assert.ok(resourcePaths.size > 0, 'DSH boot document advertises client resources')
+const instanceOrigin = new URL(instance.url)
+const dshCookies = authenticated ? `${portalCookie}; ${dshCookie}` : portalCookie
+const failedResources = []
+for (const path of resourcePaths) {
+  const response = await fetch(new URL(path, instanceOrigin), { headers: { cookie: dshCookies } })
+  if (response.status !== 200) failedResources.push(`${path} (${response.status})`)
+  response.body?.cancel()
+}
+assert.deepEqual(failedResources, [], `DSH boot resources load through the portal: ${failedResources.join(', ')}`)
+
 console.log(JSON.stringify({
   portal: origin.origin,
   instance: instance.slug,
@@ -47,4 +66,5 @@ console.log(JSON.stringify({
   authentication: authenticated ? 'token-cookie' : 'legacy-tokenless',
   pageStatus: page.status,
   transportBootstrap: true,
+  bootResources: resourcePaths.size,
 }, null, 2))

@@ -21,6 +21,10 @@ export function prepareRequest(body, model) {
   const max = body.max_completion_tokens ?? body.max_tokens ?? model.max_output_tokens
   if (!Number.isSafeInteger(max) || max < 1 || max > model.max_output_tokens) throw new Error('输出 Token 上限超出该模型的平台设置。')
   const payload = Object.fromEntries(allowedFields.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]))
+  payload.messages = [...payload.messages]
+  const identityAt = payload.messages.findIndex((message) => !['system', 'developer'].includes(message.role))
+  payload.messages.splice(identityAt < 0 ? payload.messages.length : identityAt, 0, { role: 'system',
+    content: `当前平台模型名称是 ${JSON.stringify(model.name)}。当用户询问你是谁、由哪个模型驱动或正在使用什么模型时，请使用这个名称回答；${model.id} 只是内部路由 ID，不是模型名称。` })
   // Conservative text allowance, including tool schemas and provider framing. This is a
   // reservation, never presented as measured usage. Returned usage replaces it at settlement.
   // DSH requests include sizeable system instructions and tool schemas. Reserving

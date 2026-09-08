@@ -70,7 +70,7 @@ registerGatewayAdmin(admin, {
 })
 let uid, other, model, token
 test.beforeEach(() => {
-  db.exec('DELETE FROM personal_usage_records; DELETE FROM gateway_requests; DELETE FROM gateway_users; DELETE FROM gateway_models; DELETE FROM users;')
+  db.exec('DELETE FROM personal_usage_records; DELETE FROM personal_usage_checkpoints; DELETE FROM gateway_requests; DELETE FROM gateway_users; DELETE FROM gateway_models; DELETE FROM users;')
   uid = Number(createUser({ username: 'alice', name: 'Alice' }))
   other = Number(createUser({ username: 'bob', name: 'Bob' }))
   db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
@@ -129,6 +129,16 @@ test('a normal large DSH system prompt fits a 100k daily allowance', async () =>
   const request = body({ messages: [{ role: 'system', content: 'a'.repeat(70000) }, { role: 'user', content: 'hello' }], max_tokens: 40960 })
   assert.ok(prepareRequest(request, model).reservation < 100000)
   assert.equal((await call(request)).statusCode, 200)
+})
+
+test('platform requests identify the configured model name instead of the routing id', () => {
+  const prepared = prepareRequest(body({ messages: [
+    { role: 'system', content: 'You are running in DSH with model m-test.' },
+    { role: 'user', content: 'who are you?' },
+  ] }), model)
+  assert.equal(prepared.payload.messages[1].role, 'system')
+  assert.match(prepared.payload.messages[1].content, /"Test"/)
+  assert.match(prepared.payload.messages[1].content, /m-test.*内部路由 ID/)
 })
 
 test('SSE chunks preserve text and tool calls, consume final usage exactly once', async () => {
@@ -359,4 +369,11 @@ test('current DSH cumulative usage snapshots are recorded as idempotent deltas',
     FROM personal_usage_records WHERE user_id=?`).get(uid)
   assert.deepEqual(totals, { input: 185, output: 35, cache: 25 })
   assert.equal(store.usage(uid, '2026-09-02').chargedTokens, 0)
+})
+
+test('platform-model snapshots are not duplicated as personal usage', () => {
+  const snapshot = { sessionId: 'session-platform', seq: 20, occurredAt: Date.parse('2026-09-02T03:00:00Z'),
+    provider: 'portal-gateway', model: model.id, inputTokens: 100, outputTokens: 20, cacheReadTokens: 10 }
+  assert.equal(recordPersonalUsageSnapshots(uid, [snapshot]), 0)
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM personal_usage_records WHERE provider='portal-gateway'").get().count, 0)
 })

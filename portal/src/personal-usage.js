@@ -51,7 +51,8 @@ export const recordPersonalUsageSnapshots = db.transaction((userId, snapshots) =
     output_tokens=excluded.output_tokens,cache_read_tokens=excluded.cache_read_tokens`)
   let added = 0
   for (const snapshot of snapshots) {
-    if (typeof snapshot?.sessionId !== 'string' || snapshot.sessionId.length > 200
+    if (snapshot?.provider === 'portal-gateway'
+        || typeof snapshot?.sessionId !== 'string' || snapshot.sessionId.length > 200
         || typeof snapshot.provider !== 'string' || typeof snapshot.model !== 'string'
         || snapshot.provider.length > 160 || snapshot.model.length > 160
         || ![snapshot.seq, snapshot.occurredAt, snapshot.inputTokens, snapshot.outputTokens, snapshot.cacheReadTokens].every(nonNegativeInteger)) continue

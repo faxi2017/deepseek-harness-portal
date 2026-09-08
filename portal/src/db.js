@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS dsh_upgrade_history (
 CREATE INDEX IF NOT EXISTS dsh_upgrade_history_instance_idx ON dsh_upgrade_history(instance_id, id DESC);
 `)
 
+// Platform calls are accounted for by gateway_requests. Older snapshot fallback
+// records duplicated them as personal-model usage.
+db.prepare("DELETE FROM personal_usage_records WHERE provider='portal-gateway'").run()
+
 const instanceColumns = new Set(db.pragma('table_info(instances)').map((row) => row.name))
 if (!instanceColumns.has('release_id')) db.exec('ALTER TABLE instances ADD COLUMN release_id INTEGER REFERENCES dsh_releases(id)')
 

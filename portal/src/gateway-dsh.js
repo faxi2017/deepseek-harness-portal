@@ -69,7 +69,7 @@ async function syncDshUnlocked(userId, { setDefault = false, initial = false } =
     await dshRpc(inst.host_port, 'settings.mutate', { ns: ns.ns, expectedRevision: ns.revision,
       ops: [{ op: 'set', path: ['providers', 'portal-gateway'], value: {
         displayName: '平台模型', api: 'openai-completions', baseURL: config.gatewayTenantUrl,
-        apiKeyEnv: 'PORTAL_GATEWAY_API_KEY', models: models.map((m) => ({ id: m.id, name: m.upstream_model,
+        apiKeyEnv: 'PORTAL_GATEWAY_API_KEY', models: models.map((m) => ({ id: m.id, name: m.name,
           maxTokens: m.max_output_tokens, contextWindow: 65536, input: ['text'] })),
       } }] })
     if (setDefault) {

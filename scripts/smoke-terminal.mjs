@@ -56,13 +56,13 @@ await new Promise((resolve, reject) => {
         const message = JSON.parse(data.toString())
         if (message.type === 'ready') {
           socket.send(JSON.stringify({ type: 'resize', cols: 101, rows: 37 }))
-          socket.send(JSON.stringify({ type: 'input', data: "printf '__ROOT__%s__SIZE__%s__\\n' \"$(id -u)\" \"$(stty size)\"\n" }))
+          socket.send(JSON.stringify({ type: 'input', data: "cd /home/dsh/.dsh && printf '__ROOT__%s__SIZE__%s__DSH__%s__\\n' \"$(id -u)\" \"$(stty size)\" \"$PWD\"\n" }))
           return
         }
       } catch { /* terminal text */ }
     }
     output += data.toString()
-    if (output.includes('__ROOT__0__SIZE__37 101__')) {
+    if (output.includes('__ROOT__0__SIZE__37 101__DSH__/home/dsh/.dsh__')) {
       clearTimeout(timeout)
       resolve()
     }
@@ -71,7 +71,7 @@ await new Promise((resolve, reject) => {
 })
 
 const suffix = `${process.pid}-${Date.now()}`
-const path = `/tmp/dsh-terminal-smoke-${suffix}.txt`
+const path = `/home/dsh/.dsh/.terminal-smoke-${suffix}.txt`
 const content = Buffer.from(`terminal file transfer ${suffix}\n`)
 await api(`/api/admin/terminal/instances/${instance.id}/upload?path=${encodeURIComponent(path)}`, {
   method: 'POST', body: content, headers: { 'content-type': 'application/octet-stream' },

@@ -1,14 +1,13 @@
 import { randomBytes } from 'node:crypto'
-import { dirname, join, posix } from 'node:path'
+import { PassThrough } from 'node:stream'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Docker from 'dockerode'
-import tar from 'tar-stream'
 import WebSocket, { WebSocketServer } from 'ws'
 
 import { SESSION_COOKIE } from './auth.js'
 import { config } from './config.js'
 import { sessionForToken } from './db.js'
-import { docker } from './docker.js'
 
 export const TERMINAL_WS_PATH = '/api/admin/terminal/ws'
 export const TERMINAL_MAX_FILE_BYTES = 16 * 1024 * 1024
@@ -50,40 +49,55 @@ function socketError(socket, message) {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message }))
 }
 
-function archiveFile(archive) {
-  return new Promise((resolve, reject) => {
-    const extract = tar.extract()
-    let result = null
-    let failed = false
-    const fail = (error) => {
-      if (failed) return
-      failed = true
-      reject(error)
-      archive.destroy()
-    }
-    extract.on('entry', (header, stream, next) => {
-      if (result !== null || header.type !== 'file') return fail(new Error('not a single regular file'))
-      const chunks = []
-      let size = 0
-      stream.on('data', (chunk) => {
-        size += chunk.length
-        if (size > TERMINAL_MAX_FILE_BYTES) return fail(new Error('file is too large'))
-        chunks.push(chunk)
-      })
-      stream.on('end', () => {
-        result = Buffer.concat(chunks)
-        next()
-      })
-      stream.on('error', fail)
-    })
-    extract.once('finish', () => {
-      if (!failed && result !== null) resolve(result)
-      else if (!failed) reject(new Error('not a single regular file'))
-    })
-    extract.once('error', fail)
-    archive.once('error', fail)
-    archive.pipe(extract)
+async function execExitCode(exec) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const state = await exec.inspect()
+    if (!state.Running && Number.isInteger(state.ExitCode)) return state.ExitCode
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  return null
+}
+
+async function execOutput(container, cmd) {
+  const exec = await container.exec({ Cmd: cmd, AttachStdout: true, AttachStderr: true, Tty: false, User: '0:0', Privileged: true })
+  const stream = await exec.start({ hijack: true, stdin: false })
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  const chunks = []
+  stdout.on('data', (chunk) => chunks.push(chunk))
+  stderr.resume()
+  container.modem.demuxStream(stream, stdout, stderr)
+  await new Promise((resolve, reject) => {
+    stream.once('end', resolve)
+    stream.once('error', reject)
   })
+  return { body: Buffer.concat(chunks), exitCode: await execExitCode(exec) }
+}
+
+async function readContainerFile(container, path) {
+  const metadata = await execOutput(container, ['/bin/sh', '-c', 'test -f "$1" && [ ! -L "$1" ] && wc -c < "$1"', 'sh', path])
+  const size = Number(metadata.body.toString().trim())
+  if (metadata.exitCode !== 0 || !Number.isSafeInteger(size) || size < 0) throw new Error('not a single regular file')
+  if (size > TERMINAL_MAX_FILE_BYTES) throw new Error('file is too large')
+  const file = await execOutput(container, ['/bin/cat', path])
+  if (file.exitCode !== 0) throw new Error('download source not found')
+  if (file.body.length > TERMINAL_MAX_FILE_BYTES) throw new Error('file is too large')
+  return file.body
+}
+
+async function writeContainerFile(container, path, body) {
+  const exec = await container.exec({
+    Cmd: ['/bin/sh', '-c', 'umask 077; cat > "$1" && case "$1" in /home/dsh/*) chown 1000:1000 "$1" ;; esac', 'sh', path],
+    AttachStdin: true, AttachStdout: true, AttachStderr: true,
+    Tty: false, User: '0:0', Privileged: true,
+  })
+  const stream = await exec.start({ hijack: true, stdin: true })
+  await new Promise((resolve, reject) => {
+    stream.once('end', resolve)
+    stream.once('error', reject)
+    stream.end(body)
+  })
+  if (await execExitCode(exec) !== 0) throw new Error('write failed')
 }
 
 async function attachTerminal(socket, instance, sessionToken, userId) {
@@ -100,6 +114,7 @@ async function attachTerminal(socket, instance, sessionToken, userId) {
     AttachStderr: true,
     Tty: true,
     User: '0:0',
+    Privileged: true,
     WorkingDir: '/workspace',
     Env: ['TERM=xterm-256color', 'COLORTERM=truecolor', 'HOME=/home/dsh', 'DSH_HOME=/home/dsh/.dsh'],
   })
@@ -155,8 +170,7 @@ export function registerTerminalAdmin(app, { requireAdmin, getInstanceById, list
     if (!admin) return
     const instance = getInstanceById(Number(req.body?.instanceId))
     if (!instance) return reply.code(404).send({ error: 'not found' })
-    let container
-    try { container = await managedRunningContainer(instance) }
+    try { await managedRunningContainer(instance) }
     catch (error) {
       if (error.message === 'instance is not running') return reply.code(409).send({ error: error.message })
       return reply.code(403).send({ error: 'unmanaged container' })
@@ -178,17 +192,15 @@ export function registerTerminalAdmin(app, { requireAdmin, getInstanceById, list
     const path = containerPath(req.query?.path)
     if (!instance) return reply.code(404).send({ error: 'not found' })
     if (!path || !Buffer.isBuffer(req.body) || req.body.length === 0) return reply.code(400).send({ error: 'invalid upload' })
-    try { await managedRunningContainer(instance) }
+    let container
+    try { container = await managedRunningContainer(instance) }
     catch (error) { return reply.code(error.message === 'instance is not running' ? 409 : 403).send({ error: error.message }) }
-    const dir = mkdtempSync(join(tmpdir(), 'dsh-terminal-upload-'))
-    const source = join(dir, 'upload')
     try {
-      writeFileSync(source, req.body, { mode: 0o600 })
-      try {
-        await docker(['cp', source, `${instance.container_name}:${path}`], { timeout: Math.max(config.dockerCommandTimeoutMs, 120000) })
-      } catch { return reply.code(400).send({ error: 'upload failed' }) }
+      await writeContainerFile(container, path, req.body)
       return { ok: true, bytes: req.body.length, path }
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } catch (error) {
+      return reply.code(400).send({ error: 'upload failed' })
+    }
   })
 
   app.get('/api/admin/terminal/instances/:id/download', async (req, reply) => {
@@ -197,32 +209,20 @@ export function registerTerminalAdmin(app, { requireAdmin, getInstanceById, list
     const path = containerPath(req.query?.path)
     if (!instance) return reply.code(404).send({ error: 'not found' })
     if (!path) return reply.code(400).send({ error: 'invalid download' })
-    try { await managedRunningContainer(instance) }
+    let container
+    try { container = await managedRunningContainer(instance) }
     catch (error) { return reply.code(error.message === 'instance is not running' ? 409 : 403).send({ error: error.message }) }
-    const dir = mkdtempSync(join(tmpdir(), 'dsh-terminal-download-'))
-    const target = join(dir, 'download')
     try {
-      let size
-      try {
-        const checked = await docker(['exec', '--user', '0:0', instance.container_name,
-          'stat', '-Lc', '%F\t%s', '--', path])
-        const match = /^regular file\t(\d+)\s*$/.exec(checked.stdout)
-        if (!match) return reply.code(400).send({ error: 'download must be a regular file' })
-        size = Number(match[1])
-      } catch { return reply.code(404).send({ error: 'download source not found' }) }
-      if (!Number.isSafeInteger(size) || size > TERMINAL_MAX_FILE_BYTES) return reply.code(413).send({ error: 'file is too large' })
-      try {
-        await docker(['cp', '-L', `${instance.container_name}:${path}`, target], { timeout: Math.max(config.dockerCommandTimeoutMs, 120000) })
-      } catch { return reply.code(404).send({ error: 'download source not found' }) }
-      const stat = lstatSync(target)
-      if (!stat.isFile()) return reply.code(400).send({ error: 'download must be a regular file' })
-      if (stat.size > TERMINAL_MAX_FILE_BYTES) return reply.code(413).send({ error: 'file is too large' })
-      const body = readFileSync(target)
+      const body = await readContainerFile(container, path)
       const name = basename(path).replace(/[\r\n"\\]/g, '_') || 'download'
       const fallback = name.replace(/[^\x20-\x7e]/g, '_') || 'download'
       reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`)
       return reply.send(body)
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } catch (error) {
+      if (error?.message === 'file is too large') return reply.code(413).send({ error: 'file is too large' })
+      if (error?.message === 'not a single regular file') return reply.code(400).send({ error: 'download must be a regular file' })
+      return reply.code(404).send({ error: 'download source not found' })
+    }
   })
 
   const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })

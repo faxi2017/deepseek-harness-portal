@@ -29,6 +29,7 @@ import { registerGatewayAdmin } from './gateway-admin.js'
 import { registerPluginAdmin } from './plugin-admin.js'
 import { recoverPluginJobs, pluginState } from './plugins.js'
 import { startGateway } from './gateway.js'
+import { closeTerminalSocketsForUser, registerTerminalAdmin } from './terminal-admin.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -129,6 +130,7 @@ function requireAdmin(req, reply) {
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const PREAUTH_MUTATIONS = new Set(['/api/auth/register', '/api/auth/login'])
+const TERMINAL_UPLOAD_PATH = /^\/api\/admin\/terminal\/instances\/\d+\/upload$/
 
 // Tenant subdomains are same-site with the portal, so SameSite cookies alone do
 // not stop CSRF. Require the exact configured portal origin for every API
@@ -150,7 +152,9 @@ fastify.addHook('preHandler', async (req, reply) => {
   }
 
   const isLogout = path === '/api/auth/logout'
-  if (!isLogout && String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/json') {
+  const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+  const terminalUpload = TERMINAL_UPLOAD_PATH.test(path) && contentType === 'application/octet-stream'
+  if (!isLogout && contentType !== 'application/json' && !terminalUpload) {
     return reply.code(415).send({ error: 'application/json required' })
   }
   if (PREAUTH_MUTATIONS.has(path)) return
@@ -271,7 +275,10 @@ function clearSessionAndCookies(req, reply) {
       revokedUserIds.add(user.id)
     } else destroySession(token)
   }
-  for (const userId of revokedUserIds) closeUserSockets(userId)
+  for (const userId of revokedUserIds) {
+    closeUserSockets(userId)
+    closeTerminalSocketsForUser(userId)
+  }
 
   // Clear the cookie across every scope and every cookie name we may have used.
   const names = [SESSION_COOKIE, ...LEGACY_SESSION_COOKIES]
@@ -458,6 +465,7 @@ fastify.post('/api/instance/dsh-rollbacks/:upgradeId', async (req, reply) => {
 // ---- admin: settings -------------------------------------------------------
 registerGatewayAdmin(fastify, { requireAdmin, requireUser })
 registerPluginAdmin(fastify, { requireAdmin, requireUser })
+registerTerminalAdmin(fastify, { requireAdmin, getInstanceById, listInstancesWithUsers })
 
 fastify.get('/api/admin/settings', async (req, reply) => {
   if (!requireAdmin(req, reply)) return

@@ -271,6 +271,9 @@ export function setupProxy(fastify) {
   async function handleUpgrade(req, socket, head) {
     const slug = requestSlug(req)
     if (slug === null) {
+      // The admin terminal owns this authenticated WebSocket on the portal
+      // listener. Other apex upgrades remain closed here.
+      if (new URL(req.url ?? '/', config.portalOrigin).pathname === '/api/admin/terminal/ws') return
       socket.destroy()
       return
     }

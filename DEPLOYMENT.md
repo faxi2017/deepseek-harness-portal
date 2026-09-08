@@ -99,8 +99,8 @@ ssh root@10.0.9.175
 检查 `git status` 中没有 `.env`、数据库、用户数据或日志。服务器执行以下命令（目录已存在则进入现有目录，不重复 clone）：
 
 ```bash
-git clone https://github.com/faxi2017/deepseek-harness-portal.git /opt/deepseek-harness-portal
-cd /opt/deepseek-harness-portal
+git clone https://github.com/faxi2017/deepseek-harness-portal.git /home/codes/deepseek-harness-portal
+cd /home/codes/deepseek-harness-portal
 bash scripts/check-server.sh
 npm ci --prefix portal
 bash build-image.sh
@@ -156,7 +156,7 @@ systemctl status dsh-portal --no-pager
 journalctl -u dsh-portal -n 80 --no-pager
 ```
 
-模板采用服务器现有 root + Docker，工作目录固定 `/opt/deepseek-harness-portal`，Node 路径为已检查的 `/usr/bin/node`。只启动一个 Portal 进程。若改部署路径或账号，同步修改服务文件；拥有 Docker socket 权限的账号实质上具有宿主机高权限。
+模板采用服务器现有 root + Docker，工作目录固定 `/home/codes/deepseek-harness-portal`，Node 路径为已检查的 `/usr/bin/node`。只启动一个 Portal 进程。若改部署路径或账号，同步修改服务文件；拥有 Docker socket 权限的账号实质上具有宿主机高权限。
 
 端口说明：7000 是 Portal；默认 7001–7101 是由 Portal 提供鉴权的用户入口，共 101 个槽位。18000–18100 仅绑定宿主机回环，用于代理访问容器，不要对外开放。若服务器防火墙或网络 ACL 阻止访问，只对实际试用网段放行 7000–7101/TCP；不要改动其他现有服务规则。
 
@@ -176,7 +176,7 @@ ssh root@10.0.9.175
 服务器：
 
 ```bash
-cd /opt/deepseek-harness-portal
+cd /home/codes/deepseek-harness-portal
 git status --short
 git rev-parse HEAD
 systemctl stop dsh-portal

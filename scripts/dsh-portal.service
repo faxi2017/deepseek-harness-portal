@@ -7,8 +7,8 @@ PartOf=docker.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/deepseek-harness-portal
-ExecStart=/usr/bin/node --env-file=/opt/deepseek-harness-portal/.env /opt/deepseek-harness-portal/portal/src/index.js
+WorkingDirectory=/home/codes/deepseek-harness-portal
+ExecStart=/usr/bin/node --env-file=/home/codes/deepseek-harness-portal/.env /home/codes/deepseek-harness-portal/portal/src/index.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

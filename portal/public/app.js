@@ -11,6 +11,10 @@ let dshReleasesCache = []
 let myDshReleases = []
 let myDshUpgrades = []
 let myInstance = null
+let terminal = null
+let terminalFit = null
+let terminalSocket = null
+let terminalInstances = []
 let cfg = { domain: '', instanceDomain: '', registrationEnabled: true, inviteCodeRequired: false }
 
 const THEME_STORAGE_KEY = 'dsh-portal-theme'
@@ -126,6 +130,15 @@ const ERROR_MESSAGES = {
   'instance deletion failed; data was retained': '实例删除失败，请联系管理员查看日志',
   'health check timed out': '实例启动超时，请联系管理员查看日志',
   'instance health check timed out': '实例启动超时，请稍后重试或联系管理员',
+  'instance is not running': '实例尚未运行',
+  'unmanaged container': '目标不是平台托管实例，已拒绝操作',
+  'invalid upload': '请选择文件并填写有效的容器绝对路径',
+  'upload failed': '上传失败，请确认目标目录存在且可写',
+  'invalid download': '请填写有效的容器绝对路径',
+  'request body is too large': '文件超过 16 MB 限制',
+  'download source not found': '找不到要下载的文件',
+  'download must be a regular file': '只能下载单个普通文件',
+  'file is too large': '文件超过 16 MB 限制',
 }
 
 function errorMessage(message) {
@@ -278,7 +291,9 @@ function setAdminTab(tab) {
   $('#panel-gateway').classList.toggle('hidden', tab !== 'gateway')
   $('#panel-plugins').classList.toggle('hidden', tab !== 'plugins')
   $('#panel-dsh-versions').classList.toggle('hidden', tab !== 'dsh-versions')
-  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', plugins: '默认插件', 'dsh-versions': 'DSH 版本管理' }
+  $('#panel-terminal').classList.toggle('hidden', tab !== 'terminal')
+  if (tab !== 'terminal') disconnectTerminal()
+  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', plugins: '默认插件', 'dsh-versions': 'DSH 版本管理', terminal: '容器终端' }
   $('#topbar-title').textContent = titles[tab] || '概览'
   if (tab === 'instances') renderInstances()
   else if (tab === 'users') renderUsers()
@@ -286,6 +301,7 @@ function setAdminTab(tab) {
   else if (tab === 'gateway') renderGateway()
   else if (tab === 'plugins') renderPlugins(true)
   else if (tab === 'dsh-versions') renderDshVersions()
+  else if (tab === 'terminal') renderTerminal()
 }
 
 function setUserTab(tab) {
@@ -584,6 +600,158 @@ $('#settings-form').addEventListener('submit', async (e) => {
     setTimeout(() => { msg.textContent = '' }, 2000)
   } catch (err) { msg.textContent = err.message; msg.className = 'form-msg err' }
 })
+
+// ---- admin terminal -------------------------------------------------------
+function setTerminalState(label, connected = false, message = '') {
+  const state = $('#terminal-state')
+  state.textContent = label
+  state.className = `badge ${connected ? 'badge-running' : 'badge-stopped'}`
+  $('#terminal-message').textContent = message
+  $('#terminal-connect').disabled = connected
+  $('#terminal-disconnect').disabled = !connected
+}
+
+function ensureTerminal() {
+  if (terminal) return
+  const TerminalCtor = globalThis.Terminal?.Terminal ?? globalThis.Terminal
+  const FitCtor = globalThis.FitAddon?.FitAddon
+  terminal = new TerminalCtor({
+    cursorBlink: true, convertEol: false, scrollback: 5000,
+    fontFamily: 'Cascadia Mono, Consolas, monospace', fontSize: 14,
+    theme: { background: '#07111f', foreground: '#d9e5f2', cursor: '#48b9ff', selectionBackground: '#1e5680' },
+  })
+  terminalFit = new FitCtor()
+  terminal.loadAddon(terminalFit)
+  terminal.open($('#terminal-screen'))
+  terminalFit.fit()
+  terminal.writeln('\x1b[38;5;75m选择实例并点击“连接”以打开 root 终端。\x1b[0m')
+  terminal.onData((data) => {
+    if (terminalSocket?.readyState === WebSocket.OPEN) terminalSocket.send(JSON.stringify({ type: 'input', data }))
+  })
+  terminal.onResize(({ cols, rows }) => {
+    if (terminalSocket?.readyState === WebSocket.OPEN) terminalSocket.send(JSON.stringify({ type: 'resize', cols, rows }))
+  })
+  window.addEventListener('resize', () => {
+    if (!$('#panel-terminal').classList.contains('hidden')) terminalFit.fit()
+  })
+}
+
+async function renderTerminal() {
+  ensureTerminal()
+  terminalFit.fit()
+  try {
+    const { instances } = await api('/api/admin/terminal/instances')
+    terminalInstances = instances
+    const select = $('#terminal-instance')
+    const selected = select.value
+    select.innerHTML = '<option value="">请选择实例</option>' + instances.map((instance) =>
+      `<option value="${instance.id}">${escapeHtml(instance.username || instance.slug)} · ${escapeHtml(instance.slug)} · ${escapeHtml(STATUS_LABELS[instance.status] || instance.status)}</option>`).join('')
+    if (instances.some((instance) => String(instance.id) === selected)) select.value = selected
+  } catch (err) { setTerminalState('加载失败', false, err.message) }
+}
+
+function disconnectTerminal() {
+  if (terminalSocket) {
+    const socket = terminalSocket
+    terminalSocket = null
+    socket.close(1000, 'admin disconnected')
+  }
+  if ($('#terminal-state')) setTerminalState('未连接', false, '选择实例后连接，停止的实例会自动启动。')
+}
+
+async function connectTerminal() {
+  const instanceId = Number($('#terminal-instance').value)
+  const instance = terminalInstances.find((item) => item.id === instanceId)
+  if (!instance) return toast('请先选择实例', 'err')
+  disconnectTerminal()
+  ensureTerminal()
+  terminal.clear()
+  setTerminalState('正在连接', false, `${instance.slug} · 正在准备 root 终端…`)
+  $('#terminal-connect').disabled = true
+  try {
+    if (instance.status !== 'running') {
+      setTerminalState('正在启动', false, `${instance.slug} · 实例启动后将自动连接…`)
+      $('#terminal-connect').disabled = true
+      await api(`/api/admin/instances/${instance.id}/start`, { method: 'POST' })
+      instance.status = 'running'
+    }
+    const { ticket } = await api('/api/admin/terminal/ticket', { method: 'POST', body: { instanceId } })
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(`${protocol}//${location.host}/api/admin/terminal/ws?ticket=${encodeURIComponent(ticket)}`)
+    terminalSocket = socket
+    socket.binaryType = 'arraybuffer'
+    socket.onopen = () => {
+      terminalFit.fit()
+      socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
+    }
+    socket.onmessage = (event) => {
+      if (typeof event.data !== 'string') return terminal.write(new Uint8Array(event.data))
+      let message
+      try { message = JSON.parse(event.data) } catch { return }
+      if (message.type === 'ready') {
+        setTerminalState('已连接', true, `${instance.slug} · root@${instance.slug}`)
+        terminal.focus()
+      } else if (message.type === 'error') toast(message.message, 'err')
+    }
+    socket.onerror = () => { if (terminalSocket === socket) setTerminalState('连接失败', false, '无法建立终端连接，请稍后重试。') }
+    socket.onclose = () => {
+      if (terminalSocket === socket) {
+        terminalSocket = null
+        setTerminalState('已断开', false, `${instance.slug} · 可点击“连接”重新进入。`)
+        terminal.writeln('\r\n\x1b[38;5;244m[终端连接已断开]\x1b[0m')
+      }
+    }
+  } catch (err) { setTerminalState('连接失败', false, err.message); toast(err.message, 'err') }
+}
+
+async function terminalUpload() {
+  const instanceId = Number($('#terminal-instance').value)
+  const file = $('#terminal-upload-file').files[0]
+  let path = $('#terminal-upload-path').value.trim()
+  if (!instanceId || !file || !path.startsWith('/')) return toast('请选择实例、文件并填写容器绝对路径', 'err')
+  if (file.size > 16 * 1024 * 1024) return toast('文件不能超过 16 MB', 'err')
+  if (path.endsWith('/')) path += file.name.replace(/[\\/]/g, '_')
+  const button = $('#terminal-upload')
+  try {
+    await withButtonLoading(button, '正在上传…', async () => {
+      const response = await fetch(`/api/admin/terminal/instances/${instanceId}/upload?path=${encodeURIComponent(path)}`, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken }, body: file,
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(errorMessage(data.error))
+    })
+    $('#terminal-upload-file').value = ''
+    toast(`已上传到 ${path}`, 'ok')
+  } catch (err) { toast(err.message, 'err') }
+}
+
+async function terminalDownload() {
+  const instanceId = Number($('#terminal-instance').value)
+  const path = $('#terminal-download-path').value.trim()
+  if (!instanceId || !path.startsWith('/')) return toast('请选择实例并填写容器内文件的绝对路径', 'err')
+  const button = $('#terminal-download')
+  try {
+    await withButtonLoading(button, '正在下载…', async () => {
+      const response = await fetch(`/api/admin/terminal/instances/${instanceId}/download?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store' })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(errorMessage(data.error))
+      }
+      const url = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = path.split('/').pop() || 'download'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    })
+  } catch (err) { toast(err.message, 'err') }
+}
+
+$('#terminal-connect').addEventListener('click', connectTerminal)
+$('#terminal-disconnect').addEventListener('click', disconnectTerminal)
+$('#terminal-upload').addEventListener('click', terminalUpload)
+$('#terminal-download').addEventListener('click', terminalDownload)
 
 // ---- admin actions ----
 $('#instances-table').addEventListener('click', async (e) => {

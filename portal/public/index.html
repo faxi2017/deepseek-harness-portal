@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>智慧交通 DeepHarness AI 助手</title>
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/vendor/xterm.css" />
 </head>
 <body>
   <!-- toast notifications -->
@@ -130,6 +131,9 @@
         <button class="nav-item" data-tab="dsh-versions">
           <span class="nav-icon" data-icon="refresh"></span> DSH 版本
         </button>
+        <button class="nav-item" data-tab="terminal">
+          <span class="nav-icon" data-icon="terminal"></span> 容器终端
+        </button>
       </nav>
       <nav class="nav hidden" id="user-nav" aria-label="个人功能">
         <button class="nav-item active" data-user-tab="workspace" type="button">
@@ -190,6 +194,9 @@
           </button>
           <button class="nav-item" data-tab="dsh-versions">
             <span class="nav-icon" data-icon="refresh"></span> DSH 版本
+          </button>
+          <button class="nav-item" data-tab="terminal">
+            <span class="nav-icon" data-icon="terminal"></span> 容器终端
           </button>
         </div>
         <div class="mobile-user-nav hidden" id="mobile-user-nav">
@@ -348,6 +355,30 @@
             <h3>最近构建</h3>
             <div id="dsh-builds"></div>
           </div>
+          <div class="panel terminal-panel hidden" id="panel-terminal">
+            <div class="panel-head terminal-head">
+              <div><h2>容器终端</h2><p class="hint">以 root 身份进入平台托管实例。这里的操作会直接修改容器，请谨慎执行。</p></div>
+              <div class="terminal-connect-controls">
+                <select id="terminal-instance" aria-label="选择实例"><option value="">请选择实例</option></select>
+                <button class="btn btn-primary" id="terminal-connect" type="button">连接</button>
+                <button class="btn btn-ghost" id="terminal-disconnect" type="button" disabled>断开</button>
+              </div>
+            </div>
+            <div class="terminal-status-row"><span id="terminal-state" class="badge badge-stopped">未连接</span><span id="terminal-message" class="hint">选择实例后连接，停止的实例会自动启动。</span></div>
+            <div id="terminal-screen" class="terminal-screen" aria-label="容器交互式终端"></div>
+            <div class="terminal-files">
+              <section>
+                <h3>上传文件</h3>
+                <div class="terminal-file-row"><input id="terminal-upload-path" value="/home/dsh/.dsh/" aria-label="上传到容器路径" /><input id="terminal-upload-file" type="file" /><button class="btn btn-ghost" id="terminal-upload" type="button">上传</button></div>
+                <p class="hint">先选择本地文件；目标可填写目录或完整文件路径，单个文件最大 16 MB。</p>
+              </section>
+              <section>
+                <h3>下载文件</h3>
+                <div class="terminal-file-row"><input id="terminal-download-path" placeholder="例如 /home/dsh/.dsh/config.json" aria-label="容器内文件路径" /><button class="btn btn-ghost" id="terminal-download" type="button">下载</button></div>
+                <p class="hint">仅支持下载单个普通文件，单个文件最大 16 MB。</p>
+              </section>
+            </div>
+          </div>
           <div class="panel hidden" id="panel-gateway">
             <div class="panel-head"><h2>模型网关</h2><span class="hint">统一配置 · 用量洞察</span></div>
             <p id="gateway-status" class="hint" role="status">正在加载…</p>
@@ -414,6 +445,8 @@
   </div>
 
   <script src="/vendor/echarts.min.js"></script>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/xterm-fit.js"></script>
   <script src="/gateway-charts.js"></script>
   <script src="/my-gateway-charts.js"></script>
   <script src="/app.js"></script>

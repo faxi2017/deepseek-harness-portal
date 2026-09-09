@@ -86,6 +86,10 @@ test('an unhealthy target release restores the original image and two volume sna
     assert.equal(containers.get(name).Image, oldImage)
     assert.ok(calls.some((args) => args[0] === 'volume' && args[1] === 'create' && args.at(-1).endsWith('-home-backup')))
     assert.ok(calls.some((args) => args[0] === 'volume' && args[1] === 'create' && args.at(-1).endsWith('-workspace-backup')))
+    const backupCopy = calls.find((args) => args[0] === 'run'
+      && args.some((arg) => arg.includes('dst=/source')))
+    assert.deepEqual(backupCopy.filter((arg) => ['DAC_OVERRIDE', 'CHOWN', 'FOWNER'].includes(arg)),
+      ['DAC_OVERRIDE', 'CHOWN', 'FOWNER'])
   } finally {
     await new Promise((resolve) => health.close(resolve))
   }

@@ -289,6 +289,7 @@ async function copyVolumeContents(source, target, image, { replace = false } = {
     : 'set -e; tar -C /source -cf - . | tar -C /target -xpf -'
   await docker([
     'run', '--rm', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL',
+    '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
     '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
     '--mount', `type=volume,src=${source},dst=/source,readonly`,
     '--mount', `type=volume,src=${target},dst=/target`,

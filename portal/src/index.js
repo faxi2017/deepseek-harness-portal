@@ -130,7 +130,7 @@ function requireAdmin(req, reply) {
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const PREAUTH_MUTATIONS = new Set(['/api/auth/register', '/api/auth/login'])
-const TERMINAL_UPLOAD_PATH = /^\/api\/admin\/terminal\/instances\/\d+\/upload$/
+const TERMINAL_UPLOAD_PATH = /^(?:\/api\/admin\/terminal\/instances\/\d+\/upload|\/api\/terminal\/upload)$/
 
 // Tenant subdomains are same-site with the portal, so SameSite cookies alone do
 // not stop CSRF. Require the exact configured portal origin for every API
@@ -465,7 +465,7 @@ fastify.post('/api/instance/dsh-rollbacks/:upgradeId', async (req, reply) => {
 // ---- admin: settings -------------------------------------------------------
 registerGatewayAdmin(fastify, { requireAdmin, requireUser })
 registerPluginAdmin(fastify, { requireAdmin, requireUser })
-registerTerminalAdmin(fastify, { requireAdmin, getInstanceById, listInstancesWithUsers })
+registerTerminalAdmin(fastify, { requireAdmin, requireUser, getInstanceById, getInstanceByUserId, listInstancesWithUsers })
 
 fastify.get('/api/admin/settings', async (req, reply) => {
   if (!requireAdmin(req, reply)) return

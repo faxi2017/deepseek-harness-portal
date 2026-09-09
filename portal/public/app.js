@@ -306,16 +306,20 @@ function setAdminTab(tab) {
 
 function setUserTab(tab) {
   const gateway = tab === 'gateway'
+  const terminalTab = tab === 'terminal'
   $$('#user-nav [data-user-tab], #mobile-user-nav [data-user-tab]').forEach((button) => {
     const active = button.dataset.userTab === tab
     button.classList.toggle('active', active)
     if (active) button.setAttribute('aria-current', 'page')
     else button.removeAttribute('aria-current')
   })
-  $('#user-workspace-view').classList.toggle('hidden', gateway)
+  $('#user-workspace-view').classList.toggle('hidden', gateway || terminalTab)
   $('#user-gateway-view').classList.toggle('hidden', !gateway)
-  $('#topbar-title').textContent = gateway ? '模型网关' : '我的工作空间'
+  $('#panel-terminal').classList.toggle('hidden', !terminalTab)
+  if (!terminalTab) disconnectTerminal()
+  $('#topbar-title').textContent = terminalTab ? '容器终端' : (gateway ? '模型网关' : '我的工作空间')
   if (gateway) renderMyGatewayUsage()
+  else if (terminalTab) renderTerminal()
 }
 
 // ---- auth ----
@@ -601,7 +605,7 @@ $('#settings-form').addEventListener('submit', async (e) => {
   } catch (err) { msg.textContent = err.message; msg.className = 'form-msg err' }
 })
 
-// ---- admin terminal -------------------------------------------------------
+// ---- container terminal ---------------------------------------------------
 function setTerminalState(label, connected = false, message = '') {
   const state = $('#terminal-state')
   state.textContent = label
@@ -640,13 +644,14 @@ async function renderTerminal() {
   ensureTerminal()
   terminalFit.fit()
   try {
-    const { instances } = await api('/api/admin/terminal/instances')
+    const { instances } = await api(me?.role === 'admin' ? '/api/admin/terminal/instances' : '/api/terminal/instances')
     terminalInstances = instances
     const select = $('#terminal-instance')
     const selected = select.value
     select.innerHTML = '<option value="">请选择实例</option>' + instances.map((instance) =>
       `<option value="${instance.id}">${escapeHtml(instance.username || instance.slug)} · ${escapeHtml(instance.slug)} · ${escapeHtml(STATUS_LABELS[instance.status] || instance.status)}</option>`).join('')
     if (instances.some((instance) => String(instance.id) === selected)) select.value = selected
+    else if (me?.role !== 'admin' && instances.length === 1) select.value = String(instances[0].id)
   } catch (err) { setTerminalState('加载失败', false, err.message) }
 }
 
@@ -672,10 +677,12 @@ async function connectTerminal() {
     if (instance.status !== 'running') {
       setTerminalState('正在启动', false, `${instance.slug} · 实例启动后将自动连接…`)
       $('#terminal-connect').disabled = true
-      await api(`/api/admin/instances/${instance.id}/start`, { method: 'POST' })
+      await api(me?.role === 'admin' ? `/api/admin/instances/${instance.id}/start` : '/api/instance/start', { method: 'POST' })
       instance.status = 'running'
     }
-    const { ticket } = await api('/api/admin/terminal/ticket', { method: 'POST', body: { instanceId } })
+    const { ticket } = await api(me?.role === 'admin' ? '/api/admin/terminal/ticket' : '/api/terminal/ticket', {
+      method: 'POST', body: me?.role === 'admin' ? { instanceId } : {},
+    })
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${location.host}/api/admin/terminal/ws?ticket=${encodeURIComponent(ticket)}`)
     terminalSocket = socket
@@ -714,7 +721,10 @@ async function terminalUpload() {
   const button = $('#terminal-upload')
   try {
     await withButtonLoading(button, '正在上传…', async () => {
-      const response = await fetch(`/api/admin/terminal/instances/${instanceId}/upload?path=${encodeURIComponent(path)}`, {
+      const uploadUrl = me?.role === 'admin'
+        ? `/api/admin/terminal/instances/${instanceId}/upload?path=${encodeURIComponent(path)}`
+        : `/api/terminal/upload?path=${encodeURIComponent(path)}`
+      const response = await fetch(uploadUrl, {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
         headers: { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken }, body: file,
       })
@@ -733,7 +743,10 @@ async function terminalDownload() {
   const button = $('#terminal-download')
   try {
     await withButtonLoading(button, '正在下载…', async () => {
-      const response = await fetch(`/api/admin/terminal/instances/${instanceId}/download?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store' })
+      const downloadUrl = me?.role === 'admin'
+        ? `/api/admin/terminal/instances/${instanceId}/download?path=${encodeURIComponent(path)}`
+        : `/api/terminal/download?path=${encodeURIComponent(path)}`
+      const response = await fetch(downloadUrl, { credentials: 'same-origin', cache: 'no-store' })
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
         throw new Error(errorMessage(data.error))
@@ -980,6 +993,7 @@ $$('#user-nav [data-user-tab], #mobile-user-nav [data-user-tab]').forEach((butto
 $('#profile-btn').addEventListener('click', openProfile)
 $('#mobile-profile-btn').addEventListener('click', openProfile)
 $('#refresh-btn').addEventListener('click', () => {
+  if (!$('#panel-terminal').classList.contains('hidden')) { renderTerminal(); return }
   if (me?.role === 'admin' && !$('#panel-plugins').classList.contains('hidden')) { renderPlugins(); return }
   if (me?.role === 'admin' && !$('#panel-dsh-versions').classList.contains('hidden')) { renderDshVersions(); return }
   if (me?.role === 'admin' && !$('#panel-gateway').classList.contains('hidden')) { renderGateway(); return }
@@ -1141,6 +1155,8 @@ async function boot() {
     $$('.csrf-token').forEach((input) => { input.value = csrfToken })
     $('#whoami').textContent = user.username || user.name
     showApp()
+    const terminalParent = user.role === 'admin' ? $('#admin-view') : $('#user-view')
+    terminalParent.append($('#panel-terminal'))
     $('#admin-nav').classList.toggle('hidden', user.role !== 'admin')
     $('#mobile-admin-nav').classList.toggle('hidden', user.role !== 'admin')
     $('#user-nav').classList.toggle('hidden', user.role === 'admin')

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 const dataDir = mkdtempSync(join(tmpdir(), 'dsh-terminal-test-'))
 process.env.DATA_DIR = dataDir
-const { containerPath, TERMINAL_MAX_FILE_BYTES, TERMINAL_WS_PATH } = await import('../src/terminal-admin.js')
+const { containerPath, terminalTicketCanAccessInstance, TERMINAL_MAX_FILE_BYTES, TERMINAL_WS_PATH } = await import('../src/terminal-admin.js')
 const { db } = await import('../src/db.js')
 
 test.after(() => {
@@ -24,4 +24,13 @@ test('terminal paths require bounded absolute container paths', () => {
 test('terminal protocol exposes fixed limits and endpoint', () => {
   assert.equal(TERMINAL_WS_PATH, '/api/admin/terminal/ws')
   assert.equal(TERMINAL_MAX_FILE_BYTES, 16 * 1024 * 1024)
+})
+
+test('user terminal tickets are limited to their own instance while admin tickets can select instances', () => {
+  const own = { id: 11, user_id: 7 }
+  const sibling = { id: 12, user_id: 8 }
+  assert.equal(terminalTicketCanAccessInstance({ userId: 7, admin: false }, own, { id: 7, role: 'user' }), true)
+  assert.equal(terminalTicketCanAccessInstance({ userId: 7, admin: false }, sibling, { id: 7, role: 'user' }), false)
+  assert.equal(terminalTicketCanAccessInstance({ userId: 7, admin: true }, sibling, { id: 7, role: 'admin' }), true)
+  assert.equal(terminalTicketCanAccessInstance({ userId: 7, admin: true }, sibling, { id: 7, role: 'user' }), false)
 })

@@ -103,7 +103,7 @@ async function writeContainerFile(container, path, body) {
 async function attachTerminal(socket, instance, sessionToken, userId) {
   const container = await managedRunningContainer(instance)
   const current = sessionForToken(sessionToken, { touch: false })
-  if (!current || current.user.id !== userId || current.user.role !== 'admin') {
+  if (!current || current.user.id !== userId) {
     socket.close(1008, 'session revoked')
     return
   }
@@ -151,7 +151,67 @@ export function closeTerminalSocketsForUser(userId) {
   for (const tracked of sessions) if (tracked.userId === userId) tracked.socket.close(1008, 'session revoked')
 }
 
-export function registerTerminalAdmin(app, { requireAdmin, getInstanceById, listInstancesWithUsers }) {
+function instanceSummary(instance, username = instance.username) {
+  return { id: instance.id, slug: instance.slug, username, status: instance.status }
+}
+
+async function issueTicket(req, reply, user, instance) {
+  if (!instance) return reply.code(404).send({ error: 'not found' })
+  try { await managedRunningContainer(instance) }
+  catch (error) {
+    if (error.message === 'instance is not running') return reply.code(409).send({ error: error.message })
+    return reply.code(403).send({ error: 'unmanaged container' })
+  }
+  pruneTickets()
+  const ticket = randomBytes(32).toString('base64url')
+  tickets.set(ticket, {
+    instanceId: instance.id, userId: user.id, admin: user.role === 'admin',
+    sessionToken: req.cookies?.[SESSION_COOKIE], expiresAt: Date.now() + TICKET_TTL_MS,
+  })
+  return { ticket }
+}
+
+async function uploadFile(req, reply, instance) {
+  const path = containerPath(req.query?.path)
+  if (!instance) return reply.code(404).send({ error: 'not found' })
+  if (!path || !Buffer.isBuffer(req.body) || req.body.length === 0) return reply.code(400).send({ error: 'invalid upload' })
+  let container
+  try { container = await managedRunningContainer(instance) }
+  catch (error) { return reply.code(error.message === 'instance is not running' ? 409 : 403).send({ error: error.message }) }
+  try {
+    await writeContainerFile(container, path, req.body)
+    return { ok: true, bytes: req.body.length, path }
+  } catch {
+    return reply.code(400).send({ error: 'upload failed' })
+  }
+}
+
+async function downloadFile(req, reply, instance) {
+  const path = containerPath(req.query?.path)
+  if (!instance) return reply.code(404).send({ error: 'not found' })
+  if (!path) return reply.code(400).send({ error: 'invalid download' })
+  let container
+  try { container = await managedRunningContainer(instance) }
+  catch (error) { return reply.code(error.message === 'instance is not running' ? 409 : 403).send({ error: error.message }) }
+  try {
+    const body = await readContainerFile(container, path)
+    const name = basename(path).replace(/[\r\n"\\]/g, '_') || 'download'
+    const fallback = name.replace(/[^\x20-\x7e]/g, '_') || 'download'
+    reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`)
+    return reply.send(body)
+  } catch (error) {
+    if (error?.message === 'file is too large') return reply.code(413).send({ error: 'file is too large' })
+    if (error?.message === 'not a single regular file') return reply.code(400).send({ error: 'download must be a regular file' })
+    return reply.code(404).send({ error: 'download source not found' })
+  }
+}
+
+export function terminalTicketCanAccessInstance(ticket, instance, user) {
+  return Boolean(instance && ticket && user && ((ticket.admin && user.role === 'admin')
+    || (!ticket.admin && instance.user_id === ticket.userId)))
+}
+
+export function registerTerminalAdmin(app, { requireAdmin, requireUser, getInstanceById, getInstanceByUserId, listInstancesWithUsers }) {
   app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body))
 
   app.get('/vendor/xterm.js', (_req, reply) => reply.sendFile('xterm.js', join(__dirname, '..', 'node_modules', '@xterm', 'xterm', 'lib')))
@@ -160,69 +220,52 @@ export function registerTerminalAdmin(app, { requireAdmin, getInstanceById, list
 
   app.get('/api/admin/terminal/instances', async (req, reply) => {
     if (!requireAdmin(req, reply)) return
-    return { instances: listInstancesWithUsers().filter((instance) => !['deleting', 'provisioning'].includes(instance.status)).map((instance) => ({
-      id: instance.id, slug: instance.slug, username: instance.username, status: instance.status,
-    })) }
+    return { instances: listInstancesWithUsers().filter((instance) => !['deleting', 'provisioning'].includes(instance.status)).map((instance) => instanceSummary(instance)) }
+  })
+
+  app.get('/api/terminal/instances', async (req, reply) => {
+    const user = requireUser(req, reply)
+    if (!user) return
+    const instance = getInstanceByUserId(user.id)
+    return { instances: instance && !['deleting', 'provisioning'].includes(instance.status) ? [instanceSummary(instance, user.username)] : [] }
   })
 
   app.post('/api/admin/terminal/ticket', async (req, reply) => {
     const admin = requireAdmin(req, reply)
     if (!admin) return
-    const instance = getInstanceById(Number(req.body?.instanceId))
-    if (!instance) return reply.code(404).send({ error: 'not found' })
-    try { await managedRunningContainer(instance) }
-    catch (error) {
-      if (error.message === 'instance is not running') return reply.code(409).send({ error: error.message })
-      return reply.code(403).send({ error: 'unmanaged container' })
-    }
-    pruneTickets()
-    const ticket = randomBytes(32).toString('base64url')
-    tickets.set(ticket, {
-      instanceId: instance.id, userId: admin.id,
-      sessionToken: req.cookies?.[SESSION_COOKIE], expiresAt: Date.now() + TICKET_TTL_MS,
-    })
-    return { ticket }
+    return issueTicket(req, reply, admin, getInstanceById(Number(req.body?.instanceId)))
+  })
+
+  app.post('/api/terminal/ticket', async (req, reply) => {
+    const user = requireUser(req, reply)
+    if (!user) return
+    return issueTicket(req, reply, user, getInstanceByUserId(user.id))
   })
 
   app.post('/api/admin/terminal/instances/:id/upload', {
     bodyLimit: TERMINAL_MAX_FILE_BYTES,
   }, async (req, reply) => {
     if (!requireAdmin(req, reply)) return
-    const instance = getInstanceById(Number(req.params.id))
-    const path = containerPath(req.query?.path)
-    if (!instance) return reply.code(404).send({ error: 'not found' })
-    if (!path || !Buffer.isBuffer(req.body) || req.body.length === 0) return reply.code(400).send({ error: 'invalid upload' })
-    let container
-    try { container = await managedRunningContainer(instance) }
-    catch (error) { return reply.code(error.message === 'instance is not running' ? 409 : 403).send({ error: error.message }) }
-    try {
-      await writeContainerFile(container, path, req.body)
-      return { ok: true, bytes: req.body.length, path }
-    } catch (error) {
-      return reply.code(400).send({ error: 'upload failed' })
-    }
+    return uploadFile(req, reply, getInstanceById(Number(req.params.id)))
+  })
+
+  app.post('/api/terminal/upload', {
+    bodyLimit: TERMINAL_MAX_FILE_BYTES,
+  }, async (req, reply) => {
+    const user = requireUser(req, reply)
+    if (!user) return
+    return uploadFile(req, reply, getInstanceByUserId(user.id))
   })
 
   app.get('/api/admin/terminal/instances/:id/download', async (req, reply) => {
     if (!requireAdmin(req, reply)) return
-    const instance = getInstanceById(Number(req.params.id))
-    const path = containerPath(req.query?.path)
-    if (!instance) return reply.code(404).send({ error: 'not found' })
-    if (!path) return reply.code(400).send({ error: 'invalid download' })
-    let container
-    try { container = await managedRunningContainer(instance) }
-    catch (error) { return reply.code(error.message === 'instance is not running' ? 409 : 403).send({ error: error.message }) }
-    try {
-      const body = await readContainerFile(container, path)
-      const name = basename(path).replace(/[\r\n"\\]/g, '_') || 'download'
-      const fallback = name.replace(/[^\x20-\x7e]/g, '_') || 'download'
-      reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`)
-      return reply.send(body)
-    } catch (error) {
-      if (error?.message === 'file is too large') return reply.code(413).send({ error: 'file is too large' })
-      if (error?.message === 'not a single regular file') return reply.code(400).send({ error: 'download must be a regular file' })
-      return reply.code(404).send({ error: 'download source not found' })
-    }
+    return downloadFile(req, reply, getInstanceById(Number(req.params.id)))
+  })
+
+  app.get('/api/terminal/download', async (req, reply) => {
+    const user = requireUser(req, reply)
+    if (!user) return
+    return downloadFile(req, reply, getInstanceByUserId(user.id))
   })
 
   const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
@@ -236,12 +279,12 @@ export function registerTerminalAdmin(app, { requireAdmin, getInstanceById, list
     const sessionToken = cookieValue(req.headers.cookie, SESSION_COOKIE)
     const session = sessionForToken(sessionToken)
     if (req.headers.origin !== config.portalOrigin || !ticket || ticket.expiresAt <= Date.now()
-        || ticket.sessionToken !== sessionToken || session?.user?.role !== 'admin' || session.user.id !== ticket.userId) {
+        || ticket.sessionToken !== sessionToken || session?.user?.id !== ticket.userId) {
       socket.destroy()
       return
     }
     const instance = getInstanceById(ticket.instanceId)
-    if (!instance) return socket.destroy()
+    if (!terminalTicketCanAccessInstance(ticket, instance, session.user)) return socket.destroy()
     websocketServer.handleUpgrade(req, socket, head, (websocket) => {
       attachTerminal(websocket, instance, sessionToken, ticket.userId).catch(() => {
         socketError(websocket, '无法连接实例终端')

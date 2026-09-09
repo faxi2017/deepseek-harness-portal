@@ -4,6 +4,11 @@
 
 将 Portal 交给 systemd 后，它会在后台运行并随服务器启动；SSH 终端可正常退出。之后请只用 `systemctl` 管理 Portal，不再运行 `bash run-portal.sh` 或 `bash stop-portal.sh`。
 
+## 以后只要 portal/package.json 或 portal/package-lock.json 有变化，服务器拉取代码后都要重新执行：
+```bash
+npm ci --prefix portal
+```
+
 ## 首次切换到 systemd
 
 先确认手工启动的 Portal 已停止，再安装本仓库的服务定义：

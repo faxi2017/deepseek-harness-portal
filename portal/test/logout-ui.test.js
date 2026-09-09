@@ -12,6 +12,7 @@ async function setup(logoutResponse) {
     classList: { add() {}, remove() {}, toggle() {} }, reset() {},
     addEventListener(name, handler) { this.listeners[name] = handler },
     appendChild(child) { this.children.push(child) },
+    querySelectorAll() { return [] },
     querySelector() { return this.button ??= makeElement() },
   })
   const forms = [makeElement(), makeElement()]
@@ -28,7 +29,7 @@ async function setup(logoutResponse) {
         return elements.get(selector)
       },
       querySelectorAll: (selector) => selector === '.logout-form' ? forms : selector === '[data-theme-select]' ? themeSelects : [],
-      addEventListener() {}, createElement: makeElement,
+      addEventListener() {}, removeEventListener() {}, createElement: makeElement,
     },
     setInterval() {}, setTimeout() {},
     window: { location: { replace: (url) => navigations.push(url) } },
@@ -81,6 +82,20 @@ test('both logout forms prevent native navigation and POST before returning home
     assert.equal(navigations.at(-1), '/')
   }
   assert.equal(requests.length, 2)
+})
+
+test('user restart keeps its button reference after confirmation and sends the request', async () => {
+  const { elements, requests } = await setup(async () => ({ ok: true, json: async () => ({ ok: true }) }))
+  const button = elements.get('#i-restart')
+  const event = { currentTarget: button }
+  const pending = button.listeners.click(event)
+  event.currentTarget = null
+  elements.get('#modal-root').button.listeners.click()
+  await pending
+  const restart = requests.find((request) => request.url === '/api/instance/restart')
+  assert.equal(restart.options.method, 'POST')
+  assert.equal(button.disabled, false)
+  assert.equal(button.innerHTML, '退出登录')
 })
 
 for (const failure of ['csrf', 'network']) {

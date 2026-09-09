@@ -10,6 +10,11 @@ db.exec(`
     upstream_model TEXT NOT NULL, secret TEXT NOT NULL, max_output_tokens INTEGER NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1, sync_error TEXT, updated_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS gateway_model_routes (
+    id TEXT PRIMARY KEY, gateway_model_id TEXT NOT NULL, upstream_model TEXT NOT NULL,
+    name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(gateway_model_id, upstream_model)
+  );
   CREATE TABLE IF NOT EXISTS gateway_users (
     user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
     daily_tokens INTEGER NOT NULL DEFAULT 100000, models TEXT NOT NULL DEFAULT '[]',
@@ -25,7 +30,10 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS gateway_usage_idx ON gateway_requests(user_id, day);
   CREATE INDEX IF NOT EXISTS gateway_usage_day_idx ON gateway_requests(day, user_id, model_id);
+  CREATE INDEX IF NOT EXISTS gateway_model_routes_model_idx ON gateway_model_routes(gateway_model_id, enabled);
 `)
+db.prepare(`INSERT OR IGNORE INTO gateway_model_routes(id,gateway_model_id,upstream_model,name,enabled)
+  SELECT id,id,upstream_model,upstream_model,1 FROM gateway_models`).run()
 
 let encryptionKey
 export function serverKey() {
@@ -61,8 +69,28 @@ export const gatewayDay = (now = Date.now()) => new Date(now + 8 * 3600000).toIS
 export const gatewayEnabled = () => config.gatewayEnabled && getSetting('gateway_enabled', 'true') === 'true'
 export const allModels = () => db.prepare('SELECT * FROM gateway_models ORDER BY name').all()
 export const getModel = (id) => db.prepare('SELECT * FROM gateway_models WHERE id=?').get(id)
-export const publicModel = ({ secret, ...row }) => ({ ...row, hasKey: Boolean(secret) })
+export const routesForModel = (id) => db.prepare(`SELECT id,gateway_model_id,upstream_model,name
+  FROM gateway_model_routes WHERE gateway_model_id=? AND enabled=1 ORDER BY rowid`).all(id)
+export const getRoute = (id) => db.prepare(`SELECT r.id,r.gateway_model_id,r.upstream_model,r.name,
+  m.name AS provider_name,m.base_url,m.secret,m.max_output_tokens,m.enabled,m.sync_error,m.updated_at
+  FROM gateway_model_routes r JOIN gateway_models m ON m.id=r.gateway_model_id
+  WHERE r.id=? AND r.enabled=1`).get(id)
+export const publicModel = ({ secret, ...row }) => ({ ...row,
+  upstreamModels: routesForModel(row.id).map((route) => route.upstream_model), hasKey: Boolean(secret) })
 export const getPolicy = (id) => db.prepare('SELECT * FROM gateway_users WHERE user_id=?').get(id)
+
+export const saveModelRoutes = db.transaction((modelId, upstreamModels) => {
+  const existing = db.prepare('SELECT id,upstream_model FROM gateway_model_routes WHERE gateway_model_id=?').all(modelId)
+  const byUpstream = new Map(existing.map((route) => [route.upstream_model, route.id]))
+  db.prepare('UPDATE gateway_model_routes SET enabled=0 WHERE gateway_model_id=?').run(modelId)
+  for (const [index, upstreamModel] of upstreamModels.entries()) {
+    const routeId = byUpstream.get(upstreamModel)
+      ?? (index === 0 && !db.prepare('SELECT 1 FROM gateway_model_routes WHERE id=?').get(modelId) ? modelId : `mr-${randomUUID()}`)
+    db.prepare(`INSERT INTO gateway_model_routes(id,gateway_model_id,upstream_model,name,enabled) VALUES(?,?,?,?,1)
+      ON CONFLICT(gateway_model_id,upstream_model) DO UPDATE SET name=excluded.name,enabled=1`)
+      .run(routeId, modelId, upstreamModel, upstreamModel)
+  }
+})
 
 export function ensurePolicy(userId) {
   if (!getPolicy(userId)) {
@@ -94,6 +122,29 @@ export function validatePolicy(input) {
 export function saveDefaults(input) {
   validatePolicy(input)
   setSetting('gateway_defaults', JSON.stringify(input))
+}
+
+export function deleteModelConfig(id) {
+  const remove = db.transaction(() => {
+    const model = getModel(id)
+    if (!model) return false
+    const defaults = JSON.parse(getSetting('gateway_defaults', '{"enabled":false,"dailyTokens":100000,"models":[]}'))
+    defaults.models = defaults.models.filter((modelId) => modelId !== id)
+    if (!defaults.models.length) defaults.enabled = false
+    setSetting('gateway_defaults', JSON.stringify(defaults))
+    for (const policy of db.prepare('SELECT user_id,enabled,models,updated_at FROM gateway_users').all()) {
+      const assigned = JSON.parse(policy.models)
+      const models = assigned.filter((modelId) => modelId !== id)
+      if (models.length === assigned.length) continue
+      db.prepare('UPDATE gateway_users SET enabled=?,models=?,synced_at=NULL,updated_at=? WHERE user_id=?')
+        .run(Number(Boolean(policy.enabled) && models.length > 0), JSON.stringify(models), Math.max(Date.now(), policy.updated_at + 1), policy.user_id)
+    }
+    db.prepare('UPDATE gateway_model_routes SET enabled=0 WHERE gateway_model_id=?').run(id)
+    db.prepare('DELETE FROM gateway_models WHERE id=?').run(id)
+    db.prepare('DELETE FROM settings WHERE key=?').run(`bifrost_vk_${id}`)
+    return true
+  })
+  return remove()
 }
 
 export function rotateToken(userId) {
@@ -128,8 +179,8 @@ export function authorize(token) {
 // The transaction runs before any upstream I/O; parallel calls cannot spend the same balance.
 export const reserve = db.transaction((userId, modelId, tokens, now = Date.now()) => {
   const policy = getPolicy(userId)
-  const model = getModel(modelId)
-  if (!policy?.enabled || !model?.enabled || model.sync_error || !JSON.parse(policy.models).includes(modelId)) return null
+  const model = getRoute(modelId)
+  if (!policy?.enabled || !model?.enabled || model.sync_error || !JSON.parse(policy.models).includes(model.gateway_model_id)) return null
   const day = gatewayDay(now)
   const spent = usage(userId, day)
   if (tokens > policy.daily_tokens - spent.chargedTokens - spent.reservedTokens) return null

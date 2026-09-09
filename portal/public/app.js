@@ -478,10 +478,11 @@ async function renderMyPlugins(refresh = false) {
 }
 
 $('#i-restart').addEventListener('click', async (e) => {
+  const button = e.currentTarget
   const ok = await confirmModal('重启服务', '将停止并重新启动当前容器。文件、插件和配置会保留，当前连接会短暂中断。', '确认重启', false)
   if (!ok) return
   try {
-    await withButtonLoading(e.currentTarget, '正在重启…', () => api('/api/instance/restart', { method: 'POST' }))
+    await withButtonLoading(button, '正在重启…', () => api('/api/instance/restart', { method: 'POST' }))
     toast('服务已重启', 'ok')
     renderUser()
   } catch (err) { toast(err.message, 'err') }
@@ -1048,7 +1049,7 @@ async function renderGateway() {
     $('#gateway-defaults').elements.defaultEnabled.checked = data.defaults.enabled
     $('#gateway-default-quota').value = data.defaults.dailyTokens
     $('#gateway-default-models').innerHTML = gatewayChecks(data.models, data.defaults.models)
-    $('#gateway-models').innerHTML = data.models.length ? `<div class="table-wrap"><table><thead><tr><th>模型</th><th>接口地址</th><th>状态</th><th>操作</th></tr></thead><tbody>${data.models.map((m) => `<tr><td>${escapeHtml(m.name)}<div class="hint">${escapeHtml(m.upstream_model)}</div></td><td class="cell-mono">${escapeHtml(m.base_url)}</td><td>${m.sync_error ? escapeHtml(m.sync_error) : m.enabled ? '已启用' : '已停用'}<div class="hint">密钥${m.hasKey ? '已保存' : '未配置'}</div></td><td><div class="cell-actions"><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="edit">编辑</button><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="sync">重试同步</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">尚未添加平台模型。</p>'
+    $('#gateway-models').innerHTML = data.models.length ? `<div class="table-wrap"><table><thead><tr><th>模型</th><th>接口地址</th><th>状态</th><th>操作</th></tr></thead><tbody>${data.models.map((m) => `<tr><td>${escapeHtml(m.name)}<div class="hint">${m.upstreamModels.map(escapeHtml).join('<br>')}</div></td><td class="cell-mono">${escapeHtml(m.base_url)}</td><td>${m.sync_error ? escapeHtml(m.sync_error) : m.enabled ? '已启用' : '已停用'}<div class="hint">密钥${m.hasKey ? '已保存' : '未配置'}</div></td><td><div class="cell-actions"><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="edit">编辑</button><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="sync">重试同步</button><button class="btn btn-danger btn-sm" data-model="${m.id}" data-action="delete">删除</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">尚未添加平台模型。</p>'
     $('#gateway-users').innerHTML = data.users.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>可用模型</th><th>今日用量 / 限额</th><th>配置状态</th><th>操作</th></tr></thead><tbody>${data.users.map((u) => `<tr><td>${escapeHtml(u.username)}<div class="hint">${u.enabled ? '已启用' : '未启用'}</div></td><td>${u.models.map((id) => escapeHtml(data.models.find((m) => m.id === id)?.name ?? id)).join('<br>') || '—'}</td><td>${exactTokens(u.chargedTokens)} / ${exactTokens(u.dailyTokens)}<div class="hint">预留 ${exactTokens(u.reservedTokens)} · 可用 ${exactTokens(u.remainingTokens)}</div></td><td>${u.syncError ? escapeHtml(u.syncError) : u.syncedAt ? '已下发' : '尚未下发'}</td><td><button class="btn btn-ghost btn-sm" data-policy="${u.id}">配置</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">注册用户后可在此分配模型和额度。</p>'
     const form = $('#gateway-usage-filter')
     if (!form.elements.from.value) form.elements.from.value = new Date(Date.parse(data.day) - 29 * 86400000).toISOString().slice(0, 10)
@@ -1060,7 +1061,7 @@ function editGatewayModel(id) {
   const m = gatewayCache?.models.find((row) => row.id === id)
   openModal({ title: m ? '编辑平台模型' : '添加平台模型', body: `<form class="form" id="gateway-model-form">
     <div class="field"><label for="gm-name">显示名称</label><input id="gm-name" name="name" required value="${escapeHtml(m?.name ?? '')}" /></div>
-    <div class="field"><label for="gm-model">上游模型 ID</label><input id="gm-model" name="upstreamModel" required value="${escapeHtml(m?.upstream_model ?? '')}" placeholder="MiniMax-M3" /></div>
+    <div class="field"><label for="gm-model">上游模型 ID（多个请用英文逗号分隔）</label><input id="gm-model" name="upstreamModels" required value="${escapeHtml(m?.upstreamModels?.join(', ') ?? '')}" placeholder="qwen3.8-max, qwen-plus" /></div>
     <div class="field"><label for="gm-url">接口基础地址（支持兼容 OpenAI 的服务）</label><input id="gm-url" name="baseUrl" required value="${escapeHtml(m?.base_url ?? '')}" placeholder="https://example.com/v1" /></div>
     <div class="field"><label for="gm-key">API Key${m ? '（留空保留现有密钥）' : ''}</label><input id="gm-key" name="apiKey" type="password" autocomplete="new-password" /></div>
     <div class="field"><label for="gm-output">单次最大输出 Token</label><input id="gm-output" name="maxOutputTokens" type="number" min="1" max="65536" required value="${m?.max_output_tokens ?? 4096}" /></div>
@@ -1071,7 +1072,8 @@ function editGatewayModel(id) {
     const fd = new FormData($('#gateway-model-form'))
     try {
       const result = await withButtonLoading($('#gateway-model-save'), '正在保存…', () => api('/api/admin/gateway/models', { method: 'POST', body: {
-        ...(m ? { id: m.id } : {}), name: fd.get('name'), upstreamModel: fd.get('upstreamModel'), baseUrl: fd.get('baseUrl'),
+        ...(m ? { id: m.id } : {}), name: fd.get('name'),
+        upstreamModels: String(fd.get('upstreamModels')).split(',').map((value) => value.trim()).filter(Boolean), baseUrl: fd.get('baseUrl'),
         apiKey: fd.get('apiKey'), maxOutputTokens: Number(fd.get('maxOutputTokens')), enabled: fd.get('enabled') === 'on',
       } }))
       $('#gm-key').value = ''
@@ -1125,6 +1127,16 @@ $('#gateway-models').addEventListener('click', async (e) => {
   const button = e.target.closest('[data-model]')
   if (!button) return
   if (button.dataset.action === 'edit') { editGatewayModel(button.dataset.model); return }
+  if (button.dataset.action === 'delete') {
+    const model = gatewayCache?.models.find((row) => row.id === button.dataset.model)
+    const ok = await confirmModal('删除平台模型', `确定删除“${model?.name ?? '此模型'}”吗？该模型会从新用户默认配置和所有用户的可用模型中移除，历史用量仍会保留。`)
+    if (!ok) return
+    try {
+      await withButtonLoading(button, '正在删除…', () => api(`/api/admin/gateway/models/${button.dataset.model}`, { method: 'DELETE' }))
+      await renderGateway(); toast('平台模型已删除', 'ok')
+    } catch (err) { toast(err.message, 'err') }
+    return
+  }
   try { await withButtonLoading(button, '正在同步…', () => api(`/api/admin/gateway/models/${button.dataset.model}/sync`, { method: 'POST' })); renderGateway(); toast('同步成功', 'ok') }
   catch (err) { toast(err.message, 'err') }
 })

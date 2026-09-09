@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
 import { config } from './config.js'
-import { decrypt, encrypt, getModel, serverKey } from './gateway-store.js'
+import { decrypt, encrypt, getModel, routesForModel, serverKey } from './gateway-store.js'
 import { getSetting, setSetting } from './db.js'
 
 export const bifrostPassword = () => createHash('sha256').update(serverKey()).update('bifrost-admin').digest('hex')
 export const bifrostHeaders = (model) => {
   if (model) {
-    const saved = JSON.parse(getSetting(`bifrost_vk_${model.id}`, 'null'))
+    const saved = JSON.parse(getSetting(`bifrost_vk_${model.gateway_model_id ?? model.id}`, 'null'))
     if (!saved) throw new Error('Model gateway credential is not configured')
     return { authorization: `Bearer ${decrypt(saved.secret)}` }
   }
@@ -15,7 +15,7 @@ export const bifrostHeaders = (model) => {
 
 export async function bifrost(path, method = 'GET', body) {
   const response = await fetch(config.bifrostUrl + path, { method, headers: {
-    ...bifrostHeaders(), 'content-type': 'application/json',
+    ...bifrostHeaders(), ...(body === undefined ? {} : { 'content-type': 'application/json' }),
   }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15000), redirect: 'error' })
   if (!response.ok) { const error = new Error('模型网关暂不可用，请检查网关服务后重试。'); error.status = response.status; throw error }
   return response.json()
@@ -29,8 +29,20 @@ export function syncModel(model) {
   return current.finally(() => { if (syncLocks.get(model.id) === current) syncLocks.delete(model.id) })
 }
 
+export async function deleteModel(model) {
+  const saved = JSON.parse(getSetting(`bifrost_vk_${model.id}`, 'null'))
+  if (saved) {
+    try { await bifrost(`/api/governance/virtual-keys/${saved.id}`, 'DELETE') }
+    catch (error) { if (error.status !== 404) throw error }
+  }
+  try { await bifrost(`/api/providers/portal-${model.id}`, 'DELETE') }
+  catch (error) { if (error.status !== 404) throw error }
+}
+
 async function syncModelUnlocked(model) {
   const provider = `portal-${model.id}`
+  const upstreamModels = routesForModel(model.id).map((route) => route.upstream_model)
+  if (!upstreamModels.length) throw new Error('Model gateway has no configured upstream models')
   const payload = { network_config: { base_url: model.base_url, allow_private_network: true,
     max_retries: 0, default_request_timeout_in_seconds: 180 },
     concurrency_and_buffer_size: { concurrency: 10, buffer_size: 100 },
@@ -48,12 +60,12 @@ async function syncModelUnlocked(model) {
   const legacyKey = (keys ?? []).find((k) => k.name === 'portal-managed')
   const managedKeyName = `portal-managed-${model.id}`
   const key = (keys ?? []).find((k) => k.name === managedKeyName) ?? legacyKey
-  const keyBody = { name: key?.name ?? managedKeyName, value: decrypt(model.secret), models: [model.upstream_model],
+  const keyBody = { name: key?.name ?? managedKeyName, value: decrypt(model.secret), models: upstreamModels,
     weight: 1, enabled: Boolean(model.enabled) }
   await bifrost(`/api/providers/${provider}/keys${key ? `/${key.id}` : ''}`, key ? 'PUT' : 'POST', keyBody)
   let saved = JSON.parse(getSetting(`bifrost_vk_${model.id}`, 'null'))
   const virtualKey = { name: provider, is_active: Boolean(model.enabled), provider_configs: [{
-    provider, weight: 1, allowed_models: [model.upstream_model], key_ids: ['*'],
+    provider, weight: 1, allowed_models: upstreamModels, key_ids: ['*'],
   }] }
   if (saved) {
     try { await bifrost(`/api/governance/virtual-keys/${saved.id}`, 'PUT', virtualKey) }

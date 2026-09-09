@@ -12,13 +12,15 @@ const PAGE_SIZE = 100
 export const personalModelKey = (provider, model) => `personal-${createHash('sha256').update(`${provider}\0${model}`).digest('hex').slice(0, 24)}`
 
 const nonNegativeInteger = (value) => Number.isSafeInteger(value) && value >= 0
+const isPlatformProvider = (value) => typeof value === 'string'
+  && (value === 'portal-gateway' || value.startsWith('portal-gateway-'))
 
 export function personalUsageFromEvents(userId, sessionId, events) {
   const records = []
   for (const event of events) {
     const source = event?.data?.message?.source
     const usage = event?.data?.usage
-    if (event?.type !== 'assistant/message' || source?.provider === 'portal-gateway'
+    if (event?.type !== 'assistant/message' || isPlatformProvider(source?.provider)
         || typeof source?.provider !== 'string' || typeof source?.model !== 'string'
         || source.provider.length > 160 || source.model.length > 160
         || !nonNegativeInteger(event.seq) || !nonNegativeInteger(event.time)
@@ -51,7 +53,7 @@ export const recordPersonalUsageSnapshots = db.transaction((userId, snapshots) =
     output_tokens=excluded.output_tokens,cache_read_tokens=excluded.cache_read_tokens`)
   let added = 0
   for (const snapshot of snapshots) {
-    if (snapshot?.provider === 'portal-gateway'
+    if (isPlatformProvider(snapshot?.provider)
         || typeof snapshot?.sessionId !== 'string' || snapshot.sessionId.length > 200
         || typeof snapshot.provider !== 'string' || typeof snapshot.model !== 'string'
         || snapshot.provider.length > 160 || snapshot.model.length > 160

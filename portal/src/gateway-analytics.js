@@ -79,8 +79,8 @@ export function gatewayAnalytics(query) {
   return db.transaction(() => {
     const platformRows = db.prepare(`SELECT ${platformBucket} AS period,r.user_id AS userId,
       COALESCE(u.username,'已删除用户 #' || r.user_id) AS username,r.model_id AS modelId,
-      COALESCE(m.name,r.model_id) AS modelName,${platformSums}
-      FROM gateway_requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN gateway_models m ON m.id=r.model_id
+      COALESCE(mr.name,r.model_id) AS modelName,${platformSums}
+      FROM gateway_requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN gateway_model_routes mr ON mr.id=r.model_id
       WHERE ${platformWhere} GROUP BY period,r.user_id,r.model_id ORDER BY period,r.user_id,r.model_id`).all(...params(from, to))
       .map((row) => ({ ...row, source: 'platform' }))
     const personalRows = db.prepare(`SELECT ${personalBucket} AS period,p.user_id AS userId,
@@ -121,8 +121,8 @@ export function gatewayAnalytics(query) {
          UNION SELECT r.user_id,u.username FROM gateway_requests r LEFT JOIN users u ON u.id=r.user_id
          UNION SELECT p.user_id,u.username FROM personal_usage_records p LEFT JOIN users u ON u.id=p.user_id) ORDER BY name`).all(),
       models: db.prepare(`SELECT id,COALESCE(name,id) AS name FROM
-        (SELECT id,name FROM gateway_models
-         UNION SELECT r.model_id,m.name FROM gateway_requests r LEFT JOIN gateway_models m ON m.id=r.model_id
+        (SELECT id,name FROM gateway_model_routes WHERE enabled=1
+         UNION SELECT r.model_id,mr.name FROM gateway_requests r LEFT JOIN gateway_model_routes mr ON mr.id=r.model_id
          UNION SELECT p.model_key,p.provider || ' / ' || p.model_id FROM personal_usage_records p) ORDER BY name`).all(),
     }
     return { ...filter, timezone: 'Asia/Shanghai', generatedAt: Date.now(), options, summary: { ...summary,

@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { config } from './config.js'
 import { db, getUserById, listUsers, getSetting, setSetting } from './db.js'
 import { allModels, encrypt, getModel, publicModel, publicPolicy, savePolicy, saveDefaults,
-  rotateToken, gatewayEnabled, gatewayDay } from './gateway-store.js'
-import { syncModel, bifrost } from './bifrost.js'
+  deleteModelConfig, rotateToken, gatewayEnabled, gatewayDay, routesForModel, saveModelRoutes } from './gateway-store.js'
+import { deleteModel, syncModel, bifrost } from './bifrost.js'
 import { syncDsh } from './gateway-dsh.js'
 import { gatewayAnalytics, gatewayAnalyticsForUser } from './gateway-analytics.js'
 import { syncPersonalUsage } from './personal-usage.js'
@@ -44,8 +44,11 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
     if (body.id !== undefined && typeof body.id !== 'string') invalid('模型 ID 无效。')
     const existing = body.id ? getModel(body.id) : null
     if (body.id && !existing) invalid('模型不存在。')
+    const upstreamModels = (Array.isArray(body.upstreamModels) ? body.upstreamModels
+      : typeof body.upstreamModel === 'string' ? body.upstreamModel.split(',') : []).map((value) => value.trim()).filter(Boolean)
     if (typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100
-        || typeof body.upstreamModel !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,150}$/.test(body.upstreamModel)
+        || !upstreamModels.length || upstreamModels.length > 50 || new Set(upstreamModels).size !== upstreamModels.length
+        || upstreamModels.some((value) => !/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,150}$/.test(value))
         || !Number.isSafeInteger(body.maxOutputTokens) || body.maxOutputTokens < 1 || body.maxOutputTokens > 65536
         || typeof body.enabled !== 'boolean' || typeof body.baseUrl !== 'string' || body.baseUrl.length > 2048
         || (body.apiKey !== undefined && (typeof body.apiKey !== 'string' || body.apiKey.length > 4096))) invalid('请检查模型名称、模型 ID、接口地址和输出 Token 上限。')
@@ -58,7 +61,8 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
       VALUES(?,?,?,?,?,?,?,'待同步',?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,
       upstream_model=excluded.upstream_model,secret=excluded.secret,max_output_tokens=excluded.max_output_tokens,
       enabled=excluded.enabled,sync_error='待同步',updated_at=excluded.updated_at`)
-      .run(id, body.name.trim(), baseUrl, body.upstreamModel, secret, body.maxOutputTokens, Number(body.enabled), Math.max(Date.now(), (existing?.updated_at ?? 0) + 1))
+      .run(id, body.name.trim(), baseUrl, upstreamModels[0], secret, body.maxOutputTokens, Number(body.enabled), Math.max(Date.now(), (existing?.updated_at ?? 0) + 1))
+    saveModelRoutes(id, upstreamModels)
     try {
       const syncedRevision = await syncModel(getModel(id))
       db.prepare('UPDATE gateway_models SET sync_error=NULL WHERE id=? AND updated_at=?').run(id, syncedRevision)
@@ -73,6 +77,13 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
     if (!config.gatewayEnabled) invalid('服务器尚未启用模型网关，请先启动 Bifrost 并设置 MODEL_GATEWAY_ENABLED=true。')
     const syncedRevision = await syncModel(model)
     db.prepare('UPDATE gateway_models SET sync_error=NULL WHERE id=? AND updated_at=?').run(model.id, syncedRevision)
+    return { ok: true }
+  }))
+  app.delete('/api/admin/gateway/models/:id', guarded(async (req) => {
+    const model = getModel(req.params.id)
+    if (!model) invalid('模型不存在。')
+    if (config.gatewayEnabled) await deleteModel(model)
+    deleteModelConfig(model.id)
     return { ok: true }
   }))
   app.post('/api/admin/gateway/users/:id', guarded(async (req) => {
@@ -98,10 +109,10 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
       && Number.isFinite(Date.parse(d)) && new Date(d).toISOString().slice(0, 10) === d)
         || from > to || Date.parse(to) - Date.parse(from) > 366 * 86400000) invalid('日期范围须有效且不超过一年。')
     return { from, to, rows: db.prepare(`SELECT r.user_id AS userId,u.username,r.model_id AS modelId,
-      m.name AS modelName,r.day,SUM(input_tokens) AS inputTokens,SUM(output_tokens) AS outputTokens,
+      mr.name AS modelName,r.day,SUM(input_tokens) AS inputTokens,SUM(output_tokens) AS outputTokens,
       SUM(charged_tokens) AS chargedTokens,SUM(CASE WHEN state='pending' THEN reserved ELSE 0 END) AS reservedTokens,
       COUNT(*) AS requests,SUM(state='uncertain') AS uncertainRequests,SUM(state='failed') AS failedRequests
-      FROM gateway_requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN gateway_models m ON m.id=r.model_id
+      FROM gateway_requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN gateway_model_routes mr ON mr.id=r.model_id
       WHERE r.day>=? AND r.day<=? GROUP BY r.user_id,r.model_id,r.day ORDER BY r.day DESC,r.user_id`).all(from, to) }
   }))
   app.get('/api/admin/gateway/analytics', guarded(async (req) => {
@@ -123,7 +134,9 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
       const analytics = gatewayAnalyticsForUser(user.id, req.query)
       const policy = publicPolicy(user.id)
       const models = new Map(analytics.options.models.map((model) => [model.id, model]))
-      for (const model of allModels()) if (policy.models.includes(model.id)) models.set(model.id, { id: model.id, name: model.name })
+      for (const model of allModels()) if (policy.models.includes(model.id)) {
+        for (const route of routesForModel(model.id)) models.set(route.id, { id: route.id, name: route.name })
+      }
       return { ...analytics, personalSync, options: { models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)) } }
     }
     catch (error) {
@@ -136,7 +149,8 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
     if (!user) return
     const policy = publicPolicy(user.id)
     return { ...policy, gatewayEnabled: gatewayEnabled(), models: allModels().filter((m) => policy.models.includes(m.id))
-      .map((m) => ({ id: m.id, name: m.name, enabled: Boolean(m.enabled) && !m.sync_error })) }
+      .flatMap((m) => routesForModel(m.id).map((route) => ({ id: route.id, name: route.name,
+        enabled: Boolean(m.enabled) && !m.sync_error }))) }
   })
   app.post('/api/gateway/me/sync', async (req, reply) => {
     const user = requireUser(req, reply)

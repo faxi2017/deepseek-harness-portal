@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { config } from './config.js'
 import { db, getInstanceByHostPort, getInstanceByUserId } from './db.js'
-import { allModels, decrypt, ensurePolicy, getPolicy } from './gateway-store.js'
+import { allModels, decrypt, ensurePolicy, getPolicy, routesForModel } from './gateway-store.js'
 import { docker } from './docker.js'
 
 const dshCookies = new Map()
@@ -58,25 +58,33 @@ async function syncDshUnlocked(userId, { setDefault = false, initial = false } =
     if (!config.gatewayEnabled || !config.gatewayTenantUrl) throw new Error('请先启用模型网关服务。')
     const enabled = new Set(JSON.parse(policy.models))
     const models = allModels().filter((m) => enabled.has(m.id) && m.enabled && !m.sync_error)
+      .map((model) => ({ ...model, routes: routesForModel(model.id) })).filter((model) => model.routes.length)
     if (!policy.enabled || !models.length) throw new Error('此用户尚未启用可用的平台模型。')
     const snapshot = await dshRpc(inst.host_port, 'settings.describe', {})
     const ns = snapshot.namespaces?.find((n) => n.ns === 'llm-pi-ai')
     if (!snapshot.writable || !ns) throw new Error('当前 DSH 不支持可写的自定义模型配置。')
-    const existing = ns.value?.providers?.['portal-gateway']
-    if (existing && existing.apiKeyEnv !== 'PORTAL_GATEWAY_API_KEY') throw new Error('DSH 中已有同名的个人配置，请先将 portal-gateway 重命名。')
+    const currentProviders = ns.value?.providers ?? {}
+    for (const [key, provider] of Object.entries(currentProviders)) {
+      if ((key === 'portal-gateway' || key.startsWith('portal-gateway-'))
+          && provider.apiKeyEnv !== 'PORTAL_GATEWAY_API_KEY') throw new Error(`DSH 中已有同名的个人配置，请先将 ${key} 重命名。`)
+    }
+    const providers = Object.fromEntries(Object.entries(currentProviders)
+      .filter(([key]) => key !== 'portal-gateway' && !key.startsWith('portal-gateway-')))
+    for (const model of models) providers[`portal-gateway-${model.id}`] = {
+      displayName: model.name, api: 'openai-completions', baseURL: config.gatewayTenantUrl,
+      apiKeyEnv: 'PORTAL_GATEWAY_API_KEY', models: model.routes.map((route) => ({ id: route.id, name: route.name,
+        maxTokens: model.max_output_tokens, contextWindow: 65536, input: ['text'] })),
+    }
     // Path mutation with a revision check preserves every personal provider, key and plugin.
     await dshRpc(inst.host_port, 'credentials.set', { ref: 'PORTAL_GATEWAY_API_KEY', value: decrypt(policy.secret) })
     await dshRpc(inst.host_port, 'settings.mutate', { ns: ns.ns, expectedRevision: ns.revision,
-      ops: [{ op: 'set', path: ['providers', 'portal-gateway'], value: {
-        displayName: '平台模型', api: 'openai-completions', baseURL: config.gatewayTenantUrl,
-        apiKeyEnv: 'PORTAL_GATEWAY_API_KEY', models: models.map((m) => ({ id: m.id, name: m.name,
-          maxTokens: m.max_output_tokens, contextWindow: 65536, input: ['text'] })),
-      } }] })
+      ops: [{ op: 'set', path: ['providers'], value: providers }] })
     if (setDefault) {
       const defaults = snapshot.namespaces.find((n) => n.ns === 'agent-default-model')
       if (!defaults) throw new Error('模型已下发，但当前 DSH 不支持设置默认模型。')
       await dshRpc(inst.host_port, 'settings.mutate', { ns: defaults.ns, expectedRevision: defaults.revision,
-        ops: [{ op: 'set', path: ['provider'], value: 'portal-gateway' }, { op: 'set', path: ['model'], value: models[0].id }] })
+        ops: [{ op: 'set', path: ['provider'], value: `portal-gateway-${models[0].id}` },
+          { op: 'set', path: ['model'], value: models[0].routes[0].id }] })
     }
     if (getPolicy(userId)?.updated_at !== policy.updated_at) throw new Error('DSH 下发期间用户权限或凭证已变化，请重新下发。')
     db.prepare('UPDATE gateway_users SET synced_at=?,sync_error=NULL WHERE user_id=?').run(Date.now(), userId)

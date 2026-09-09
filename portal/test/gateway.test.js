@@ -7,7 +7,7 @@ import Fastify from 'fastify'
 
 const dir = mkdtempSync(join(tmpdir(), 'dsh-gateway-test-'))
 Object.assign(process.env, { DATA_DIR: dir, MODEL_GATEWAY_ENABLED: 'true' })
-const { db, createUser, setSetting, deleteUser } = await import('../src/db.js')
+const { db, createUser, getSetting, setSetting, deleteUser } = await import('../src/db.js')
 const store = await import('../src/gateway-store.js')
 const { buildGateway, prepareRequest } = await import('../src/gateway.js')
 const { registerGatewayAdmin } = await import('../src/gateway-admin.js')
@@ -19,6 +19,8 @@ let mode = 'success'
 let upstreamCalls = 0
 let observed
 let providerKeyName
+let providerModels
+let virtualKeyModels
 const upstream = Fastify()
 const providers = new Map()
 upstream.get('/api/providers', async () => ({ providers: [] }))
@@ -26,12 +28,18 @@ upstream.get('/api/providers/:id', async (req, reply) => providers.has(req.param
 upstream.post('/api/providers', async (req) => { providers.set(req.body.provider, req.body); return {} })
 upstream.put('/api/providers/:id', async (req) => { providers.set(req.params.id, req.body); return {} })
 upstream.get('/api/providers/:id/keys', async () => ({ keys: null, total: 0 }))
-upstream.post('/api/providers/:id/keys', async (req) => { assert.ok(req.body.value); providerKeyName = req.body.name; return { key: { id: 'test-key' } } })
+upstream.post('/api/providers/:id/keys', async (req) => {
+  assert.ok(req.body.value); providerKeyName = req.body.name; providerModels = req.body.models
+  return { key: { id: 'test-key' } }
+})
 upstream.post('/api/governance/virtual-keys', async (req) => {
   assert.equal(req.body.provider_configs[0].allowed_models[0], 'test-upstream')
+  virtualKeyModels = req.body.provider_configs[0].allowed_models
   return { virtual_key: { id: 'test-vk', value: 'sk-bf-fixture-secret' } }
 })
-upstream.put('/api/governance/virtual-keys/:id', async () => ({}))
+upstream.put('/api/governance/virtual-keys/:id', async (req) => { virtualKeyModels = req.body.provider_configs[0].allowed_models; return {} })
+upstream.delete('/api/governance/virtual-keys/:id', async () => ({}))
+upstream.delete('/api/providers/:id', async (req) => { providers.delete(req.params.id); return {} })
 upstream.post('/api/settings/describe', async (req) => {
   assert.equal(req.headers.cookie, 'dsh-auth=test')
   assert.equal(req.body.method, 'settings/describe')
@@ -75,11 +83,12 @@ test.beforeEach(() => {
   other = Number(createUser({ username: 'bob', name: 'Bob' }))
   db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
     VALUES('m-test','Test','http://upstream/v1','test-upstream',?,100,?)`).run(store.encrypt('upstream-SECRET'), Date.now())
-  model = store.getModel('m-test')
-  store.savePolicy(uid, { enabled: true, models: [model.id], dailyTokens: 100000 })
+  store.saveModelRoutes('m-test', ['test-upstream'])
+  model = store.getRoute('m-test')
+  store.savePolicy(uid, { enabled: true, models: [model.gateway_model_id], dailyTokens: 100000 })
   store.savePolicy(other, { enabled: false, models: [], dailyTokens: 100000 })
   token = store.decrypt(store.getPolicy(uid).secret)
-  mode = 'success'; upstreamCalls = 0; providerKeyName = undefined
+  mode = 'success'; upstreamCalls = 0; providerKeyName = undefined; providerModels = undefined; virtualKeyModels = undefined
   setSetting('gateway_enabled', 'true')
 })
 test.after(async () => { await gateway.close(); await upstream.close(); await admin.close(); db.close(); rmSync(dir, { recursive: true, force: true }) })
@@ -137,7 +146,7 @@ test('platform requests identify the configured model name instead of the routin
     { role: 'user', content: 'who are you?' },
   ] }), model)
   assert.equal(prepared.payload.messages[1].role, 'system')
-  assert.match(prepared.payload.messages[1].content, /"Test"/)
+  assert.match(prepared.payload.messages[1].content, /"test-upstream"/)
   assert.match(prepared.payload.messages[1].content, /m-test.*内部路由 ID/)
 })
 
@@ -228,6 +237,26 @@ test('invalid quotas, inaccessible models and malformed settings do not change p
   config.gatewayEnabled = true
 })
 
+test('deleting a platform model removes gateway resources and active policy references but preserves usage history', async () => {
+  await call()
+  setSetting('gateway_defaults', JSON.stringify({ enabled: true, models: [model.id], dailyTokens: 100000 }))
+  const old = config.bifrostUrl
+  config.bifrostUrl = `http://127.0.0.1:${upstream.server.address().port}`
+  try {
+    await (await import('../src/bifrost.js')).syncModel(model)
+    const result = await admin.inject({ method: 'DELETE', url: `/api/admin/gateway/models/${model.id}`, headers: { authorization: 'admin' } })
+    assert.equal(result.statusCode, 200)
+    assert.equal(store.getModel(model.id), undefined)
+    assert.deepEqual(store.publicPolicy(uid).models, [])
+    assert.equal(store.publicPolicy(uid).enabled, false)
+    assert.deepEqual(JSON.parse(getSetting('gateway_defaults')).models, [])
+    assert.equal(store.usage(uid).chargedTokens, 18)
+    assert.equal(providers.has('portal-m-test'), false)
+    assert.equal((await call()).statusCode, 401)
+    assert.equal((await admin.inject({ method: 'DELETE', url: `/api/admin/gateway/models/${model.id}`, headers: { authorization: 'admin' } })).statusCode, 400)
+  } finally { config.bifrostUrl = old }
+})
+
 test('Bifrost v2 null-key bootstrap, inference credentials and exact endpoint paths are handled', async () => {
   const { syncModel, bifrostHeaders } = await import('../src/bifrost.js')
   const old = config.bifrostUrl
@@ -244,6 +273,32 @@ test('Bifrost v2 null-key bootstrap, inference credentials and exact endpoint pa
     const detail = await admin.inject({ url: '/api/admin/gateway', headers: { authorization: 'admin' } })
     assert.equal(detail.json().healthy, true)
     assert.ok(!detail.body.includes('fixture-secret') && !detail.body.includes('upstream-SECRET') && !detail.body.includes(token))
+  } finally { config.bifrostUrl = old }
+})
+
+test('one platform provider exposes multiple selectable models and accounts usage by the selected model', async () => {
+  const old = config.bifrostUrl
+  config.bifrostUrl = `http://127.0.0.1:${upstream.server.address().port}`
+  try {
+    const saved = await admin.inject({ method: 'POST', url: '/api/admin/gateway/models', headers: { authorization: 'admin' }, payload: {
+      id: 'm-test', name: 'Test', upstreamModels: ['test-upstream', 'test-second'], baseUrl: 'http://upstream/v1',
+      apiKey: '', maxOutputTokens: 100, enabled: true,
+    } })
+    assert.equal(saved.statusCode, 200)
+    assert.deepEqual(saved.json().model.upstreamModels, ['test-upstream', 'test-second'])
+    assert.deepEqual(providerModels, ['test-upstream', 'test-second'])
+    assert.deepEqual(virtualKeyModels, ['test-upstream', 'test-second'])
+    const routes = store.routesForModel('m-test')
+    assert.deepEqual(routes.map((route) => route.name), ['test-upstream', 'test-second'])
+    const catalog = await gateway.inject({ url: '/v1/models', headers: { authorization: `Bearer ${token}` } })
+    assert.deepEqual(catalog.json().data.map((entry) => entry.id), routes.map((route) => route.id))
+    const selected = routes[1]
+    assert.equal((await call(body({ model: selected.id }))).statusCode, 200)
+    assert.equal(observed.body.model, 'portal-m-test/test-second')
+    const day = store.gatewayDay()
+    const analytics = gatewayAnalytics({ from: day, to: day, grain: 'day' })
+    assert.equal(analytics.models.find((entry) => entry.id === selected.id).name, 'test-second')
+    assert.equal(analytics.models.find((entry) => entry.id === selected.id).actualTokens, 18)
   } finally { config.bifrostUrl = old }
 })
 
@@ -265,6 +320,7 @@ test('invalid statistics dates and unsafe model base URLs are rejected without e
 test('analytics returns one filtered snapshot with zero-filled trends, comparisons and dimensions', async () => {
   db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
     VALUES('m-other','Other','http://other/v1','other-upstream',?,100,?)`).run(store.encrypt('other-key'), Date.now())
+  store.saveModelRoutes('m-other', ['other-upstream'])
   const add = (id, user, modelId, day, startedAt, input, output, charged, reserved, state) => db.prepare(`INSERT INTO gateway_requests
     (id,user_id,model_id,day,started_at,finished_at,reserved,input_tokens,output_tokens,charged_tokens,state)
     VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, user, modelId, day, startedAt, startedAt + 1000, reserved, input, output, charged, state)
@@ -286,7 +342,7 @@ test('analytics returns one filtered snapshot with zero-filled trends, compariso
   assert.equal(data.summary.activeUsers, 2)
   assert.equal(data.previous.actualTokens, 15)
   assert.deepEqual(data.users.map((u) => u.name).sort(), ['alice', 'bob'])
-  assert.deepEqual(data.models.map((m) => m.name).sort(), ['Other', 'Test'])
+  assert.deepEqual(data.models.map((m) => m.name).sort(), ['other-upstream', 'test-upstream'])
   assert.equal(data.heatmap.find((r) => r.weekday === 0 && r.hour === 9).actualTokens, 120)
   assert.ok(!response.body.includes('other-key') && !response.body.includes('SECRET'))
   const filtered = await admin.inject({ url: `/api/admin/gateway/analytics?from=2026-08-31&to=2026-09-02&userId=${uid}&modelId=m-test&grain=week`, headers: { authorization: 'admin' } })
@@ -307,6 +363,7 @@ test('analytics rejects invalid filters and large hourly ranges through the admi
 test('my analytics is limited to the signed-in user and omits identity fields', async () => {
   db.prepare(`INSERT INTO gateway_models(id,name,base_url,upstream_model,secret,max_output_tokens,updated_at)
     VALUES('m-other','Other','http://other/v1','other-upstream',?,100,?)`).run(store.encrypt('other-key'), Date.now())
+  store.saveModelRoutes('m-other', ['other-upstream'])
   const add = (id, user, modelId, input, output) => db.prepare(`INSERT INTO gateway_requests
     (id,user_id,model_id,day,started_at,finished_at,reserved,input_tokens,output_tokens,charged_tokens,state)
     VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, user, modelId, '2026-09-02', Date.parse('2026-09-02T02:00:00Z'), Date.parse('2026-09-02T02:00:01Z'), 100, input, output, input + output, 'completed')
@@ -319,8 +376,8 @@ test('my analytics is limited to the signed-in user and omits identity fields', 
   assert.equal(data.summary.actualTokens, 100)
   assert.equal(data.summary.requests, 1)
   assert.equal(data.users, undefined)
-  assert.deepEqual(data.options.models.map(({ id, name }) => ({ id, name })), [{ id: 'm-test', name: 'Test' }])
-  assert.ok(!response.body.includes('http://upstream') && !response.body.includes('test-upstream'))
+  assert.deepEqual(data.options.models.map(({ id, name }) => ({ id, name })), [{ id: 'm-test', name: 'test-upstream' }])
+  assert.ok(!response.body.includes('http://upstream') && !response.body.includes('other-key'))
   assert.deepEqual(data.rows[0].userId, undefined)
   assert.deepEqual(data.rows[0].username, undefined)
   assert.ok(!response.body.includes('bob') && !response.body.includes('Other') && !response.body.includes('other-key'))
@@ -373,7 +430,7 @@ test('current DSH cumulative usage snapshots are recorded as idempotent deltas',
 
 test('platform-model snapshots are not duplicated as personal usage', () => {
   const snapshot = { sessionId: 'session-platform', seq: 20, occurredAt: Date.parse('2026-09-02T03:00:00Z'),
-    provider: 'portal-gateway', model: model.id, inputTokens: 100, outputTokens: 20, cacheReadTokens: 10 }
+    provider: 'portal-gateway-m-test', model: model.id, inputTokens: 100, outputTokens: 20, cacheReadTokens: 10 }
   assert.equal(recordPersonalUsageSnapshots(uid, [snapshot]), 0)
   assert.equal(db.prepare("SELECT COUNT(*) count FROM personal_usage_records WHERE provider='portal-gateway'").get().count, 0)
 })

@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { config } from './config.js'
-import { authorize, getModel, reserve, settle, recoverPending, gatewayEnabled } from './gateway-store.js'
+import { authorize, getRoute, reserve, routesForModel, settle, recoverPending, gatewayEnabled } from './gateway-store.js'
 import { bifrostHeaders } from './bifrost.js'
 
 const fail = (reply, status, message) => reply.code(status).send({ error: { message, type: 'gateway_error' } })
@@ -32,7 +32,7 @@ export function prepareRequest(body, model) {
   // One token per two bytes remains conservative for mixed prose/code while
   // leaving room for the configured output ceiling; settlement uses exact usage.
   const inputAllowance = Math.ceil(Buffer.byteLength(JSON.stringify(payload), 'utf8') / 2) + body.messages.length * 32 + 1024
-  payload.model = `portal-${model.id}/${model.upstream_model}`
+  payload.model = `portal-${model.gateway_model_id}/${model.upstream_model}`
   payload.max_tokens = max
   payload.stream = body.stream === true
   if (payload.stream) payload.stream_options = { include_usage: true }
@@ -49,11 +49,12 @@ export function buildGateway({ upstream = config.bifrostUrl, headers = bifrostHe
     if (!req.policy) return fail(reply, 401, '平台模型凭证无效或已停用。')
   })
   app.get('/v1/models', async (req) => ({ object: 'list', data: JSON.parse(req.policy.models)
-    .map(getModel).filter((m) => m?.enabled && !m.sync_error).map((m) => ({ id: m.id, object: 'model', owned_by: 'portal' })) }))
+    .flatMap((modelId) => routesForModel(modelId)).map((route) => getRoute(route.id)).filter((m) => m?.enabled && !m.sync_error)
+    .map((m) => ({ id: m.id, object: 'model', owned_by: m.provider_name })) }))
 
   app.post('/v1/chat/completions', async (req, reply) => {
-    const model = typeof req.body?.model === 'string' ? getModel(req.body.model) : null
-    if (!model?.enabled || model.sync_error || !JSON.parse(req.policy.models).includes(model.id)) return fail(reply, 403, '未获授权使用此平台模型。')
+    const model = typeof req.body?.model === 'string' ? getRoute(req.body.model) : null
+    if (!model?.enabled || model.sync_error || !JSON.parse(req.policy.models).includes(model.gateway_model_id)) return fail(reply, 403, '未获授权使用此平台模型。')
     let prepared
     try { prepared = prepareRequest(req.body, model) }
     catch (error) { return fail(reply, 400, error.message) }

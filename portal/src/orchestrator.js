@@ -39,11 +39,13 @@ function invalidateRunning(name) {
 }
 
 async function assertManagedHomeVolume(inst) {
-  const object = await inspectObject('container', inst.container_name)
-  if (object && object.Config?.Labels?.['dsh.portal.managed'] !== 'true') throw new Error('unmanaged container')
+  const container = await inspectObject('container', inst.container_name)
+  if (container && container.Config?.Labels?.['dsh.portal.managed'] !== 'true') throw new Error('unmanaged container')
   const volume = `${inst.container_name}-home`
   if (!(await inspectObject('volume', volume))) throw new Error('instance home volume is missing')
-  return volume
+  const image = container?.Image ?? getDshRelease(inst.release_id)?.image_id
+  if (!image) throw new Error('instance image is unavailable')
+  return { container, image, volume }
 }
 
 async function assertManagedTenantVolumes(inst) {
@@ -57,14 +59,14 @@ async function assertManagedTenantVolumes(inst) {
 }
 
 async function scanPluginsUnlocked(inst) {
-  const volume = await assertManagedHomeVolume(inst)
+  const { image, volume } = await assertManagedHomeVolume(inst)
   const { stdout } = await docker([
     'run', '--rm', '--network', 'none', '--user', '1000:1000',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only',
     '--mount', `type=volume,src=${volume},dst=/home/dsh,readonly`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
     '-e', 'HOME=/home/dsh', '-e', 'DSH_HOME=/home/dsh/.dsh',
-    '--entrypoint', 'node', config.image, '-e', inspectPluginInventory,
+    '--entrypoint', 'node', image, '-e', inspectPluginInventory,
   ])
   const plugins = JSON.parse(stdout)
   if (!Array.isArray(plugins) || plugins.some((plugin) => !validPluginName(plugin?.name))) throw new Error('invalid plugin inventory')
@@ -88,8 +90,7 @@ export function uninstallInstancePlugin(instanceId, packageName) {
   return withLifecycleLock(inst.container_name, async () => {
     const current = getInstanceById(instanceId)
     if (!current || current.status === 'deleting') throw new Error('instance unavailable')
-    const volume = await assertManagedHomeVolume(current)
-    const object = await inspectObject('container', current.container_name)
+    const { container: object, image, volume } = await assertManagedHomeVolume(current)
     const wasRunning = Boolean(object?.State?.Running)
     if (wasRunning) await stopContainerUnlocked(current.container_name)
     try {
@@ -100,7 +101,7 @@ export function uninstallInstancePlugin(instanceId, packageName) {
         '--mount', `type=volume,src=${volume},dst=/home/dsh`,
         '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m',
         '-e', 'HOME=/home/dsh', '-e', 'DSH_HOME=/home/dsh/.dsh', '-e', 'CI=true',
-        '--entrypoint', 'flock', config.image,
+        '--entrypoint', 'flock', image,
         '-n', '/home/dsh/.dsh/portal-plugin-install.lock',
         'timeout', '--signal=TERM', '--kill-after=10s', '300s',
         'dsh', 'plugin', '--profile', 'web', 'remove', packageName,
@@ -676,7 +677,8 @@ async function applyPluginsUnlocked(inst, policy) {
     container = await inspectObject('container', inst.container_name)
     if (!container || container.Config?.Labels?.['dsh.portal.managed'] !== 'true') throw new Error('unmanaged or missing container')
     if (container.State.Running) await stopContainerUnlocked(inst.container_name)
-    const installed = await installPluginCommands(inst.container_name, policy.commands)
+    if (!container.Image) throw new Error('instance image is unavailable')
+    const installed = await installPluginCommands(inst.container_name, policy.commands, container.Image)
     if (getInstanceById(inst.id)?.status === 'deleting') throw new Error('deleting')
     await startContainerUnlocked(inst.container_name)
     if (!(await waitHealthy(inst.host_port, config.instanceStartTimeoutMs, inst.container_name))) {

@@ -237,6 +237,12 @@ test('invalid quotas, inaccessible models and malformed settings do not change p
   config.gatewayEnabled = true
 })
 
+test('saving a user policy clears its last successful issue time until it is issued again', () => {
+  db.prepare('UPDATE gateway_users SET synced_at=? WHERE user_id=?').run(1770000000000, uid)
+  store.savePolicy(uid, { enabled: true, models: [model.id], dailyTokens: 100000 })
+  assert.equal(store.publicPolicy(uid).syncedAt, null)
+})
+
 test('deleting a platform model removes gateway resources and active policy references but preserves usage history', async () => {
   await call()
   setSetting('gateway_defaults', JSON.stringify({ enabled: true, models: [model.id], dailyTokens: 100000 }))

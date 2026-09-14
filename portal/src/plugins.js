@@ -103,7 +103,8 @@ function pluginInstalled(plugin, installed) {
   return !requested || requested === current.version
 }
 
-export async function installPluginCommands(name, commands) {
+export async function installPluginCommands(name, commands, image) {
+  if (typeof image !== 'string' || !image) throw new Error('plugin helper image is required')
   const plugins = parsePluginCommands(commands)
   const helper = (entrypoint, args, { readOnly = false } = {}) => docker([
     'run', '--rm', '--network', readOnly ? 'none' : config.instanceNetwork,
@@ -112,7 +113,7 @@ export async function installPluginCommands(name, commands) {
     '--mount', `type=volume,src=${name}-home,dst=/home/dsh${readOnly ? ',readonly' : ''}`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--workdir', '/home/dsh/.dsh/profiles/web',
     '-e', 'HOME=/home/dsh', '-e', 'DSH_HOME=/home/dsh/.dsh', '-e', 'CI=true',
-    '--entrypoint', entrypoint, config.image, ...args,
+    '--entrypoint', entrypoint, image, ...args,
   ], { timeout: 330000 })
   let { stdout } = await helper('node', ['-e', inspectInstalled], { readOnly: true })
   const installed = JSON.parse(stdout)

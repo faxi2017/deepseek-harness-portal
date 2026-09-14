@@ -106,7 +106,7 @@ export function ensurePolicy(userId) {
 export function savePolicy(userId, input) {
   validatePolicy(input)
   ensurePolicy(userId)
-  db.prepare('UPDATE gateway_users SET enabled=?,daily_tokens=?,models=?,updated_at=? WHERE user_id=?')
+  db.prepare('UPDATE gateway_users SET enabled=?,daily_tokens=?,models=?,synced_at=NULL,sync_error=NULL,updated_at=? WHERE user_id=?')
     .run(Number(input.enabled), input.dailyTokens, JSON.stringify(input.models), Math.max(Date.now(), getPolicy(userId).updated_at + 1), userId)
   return getPolicy(userId)
 }

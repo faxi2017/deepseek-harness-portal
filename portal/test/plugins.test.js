@@ -9,6 +9,9 @@ import Fastify from 'fastify'
 const dir = mkdtempSync(join(tmpdir(), 'dsh-plugins-test-'))
 process.env.DATA_DIR = dir
 process.env.MODEL_GATEWAY_ENABLED = 'false'
+const configuredImage = `sha256:${'a'.repeat(64)}`
+const instanceImage = `sha256:${'b'.repeat(64)}`
+process.env.DSH_IMAGE = configuredImage
 const calls = []
 let failInstall = false
 let failRemove = false
@@ -19,7 +22,7 @@ const objects = new Map()
 mock.module('../src/docker.js', { namedExports: {
   docker: async (args) => {
     calls.push(args)
-    if (args[0] === 'run' && args.includes('--name')) objects.set(args[args.indexOf('--name') + 1], { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: true } })
+    if (args[0] === 'run' && args.includes('--name')) objects.set(args[args.indexOf('--name') + 1], { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: true }, Image: args.at(-1) })
     if (args[0] === 'rm') objects.delete(args.at(-1))
     if (args[0] === 'run' && args.includes('flock')) {
       if (holdInstall) await holdInstall
@@ -64,7 +67,7 @@ test.beforeEach(() => {
   installedDefaults = []
   userId = Number(createUser({ username: 'plugin-user', name: 'Plugin user' }))
   id = Number(createInstanceRow({ userId, slug: 'plugin-user', containerName: 'dsh-plugin-user', hostPort: healthy.address().port }))
-  objects.set('dsh-plugin-user', { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: true } })
+  objects.set('dsh-plugin-user', { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: true }, Image: instanceImage })
   objects.set('dsh-plugin-user-home', {})
 })
 test.after(async () => { await admin.close(); await new Promise((resolve) => healthy.close(resolve)); db.close(); rmSync(dir, { recursive: true, force: true }) })
@@ -118,13 +121,26 @@ test('plugin installation uses an offline helper mounted to the stopped instance
   assert.deepEqual(installs[0].slice(-7), ['dsh', 'plugin', '--profile', 'web', 'add', '-w', '@wsz987/dsh-channels@0.4.1'])
 })
 
+test('plugin helpers use each instance current container image instead of the configured bootstrap image', async () => {
+  plugins.savePluginDefaults('dsh plugin --profile web add dshmarket')
+  await plugins.queuePluginInstalls([id])
+  await scanInstancePlugins(id)
+  await uninstallInstancePlugin(id, 'dsh-context')
+  const helpers = calls.filter((args) => args[0] === 'run' && (args.includes('dsh.portal.helper=plugin-install') || args.includes('dsh.portal.helper=plugin-rescue') || args.includes('none')))
+  assert.ok(helpers.length >= 4)
+  for (const args of helpers) {
+    assert.ok(args.includes(instanceImage))
+    assert.ok(!args.includes(configuredImage))
+  }
+})
+
 test('already installed package versions and tarball sources are not fetched again', async () => {
   installedDefaults = [
     { name: '@wsz987/dsh-channels', version: '0.4.1', source: '^0.4.1' },
     { name: 'dsh-cron', version: '0.12.1', source: 'https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz' },
   ]
   await plugins.installPluginCommands('dsh-plugin-user', `dsh plugin --profile web add -w @wsz987/dsh-channels@0.4.1
-dsh plugin --profile web add -w https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz`)
+dsh plugin --profile web add -w https://github.com/squirrel20/dsh-cron/releases/latest/download/dsh-cron.tgz`, instanceImage)
   assert.equal(calls.filter((args) => args.includes('flock')).length, 0)
 })
 

@@ -1,13 +1,14 @@
 FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d
 
-ARG DSH_VERSION
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG DEBIAN_MIRROR=http://mirrors.aliyun.com
-RUN test -n "$DSH_VERSION" \
- && sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
  && apt-get -o APT::Update::Error-Mode=any update \
  && apt-get install -y --no-install-recommends git ca-certificates curl python3 build-essential iptables \
- && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG DSH_VERSION
+RUN test -n "$DSH_VERSION" \
  && npm install -g --registry="$NPM_REGISTRY" "@deepseek-ai/dsh@$DSH_VERSION" pnpm@10.28.2 \
  && npm cache clean --force
 

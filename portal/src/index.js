@@ -21,7 +21,7 @@ import {
 import { RATE_POLICIES, clearRateLimit, clientIp, consumeRateLimit } from './rate-limit.js'
 import {
   allocatePort, containerLogs, containerName, containerRunning, provision,
-  removeContainer, restartContainer, startContainer, stopContainer, verifyDockerRuntime,
+  removeInstanceResources, restartContainer, startContainer, stopContainer, verifyDockerRuntime,
 } from './orchestrator.js'
 import { closeUserSockets, setupProxy } from './proxy.js'
 import { instanceUrl } from './routing.js'
@@ -63,6 +63,9 @@ for (const inst of listInstancesWithUsers()) {
   if (inst.status === 'provisioning') {
     console.log(`[portal] re-queuing provisioning for "${inst.slug}"`)
     provision(inst.id).catch((err) => console.error('[provision]', err))
+  } else if (inst.status === 'deleting') {
+    console.log(`[portal] resuming deletion for "${inst.slug}"`)
+    finishInstanceDeletion(inst).catch((err) => console.error('[delete instance]', err))
   }
 }
 
@@ -93,6 +96,18 @@ const publicDshUpgrade = (upgrade) => ({
   operation: upgrade.operation, status: upgrade.status, createdAt: upgrade.created_at,
   finishedAt: upgrade.finished_at, message: upgrade.message,
 })
+
+async function finishInstanceDeletion(inst) {
+  try {
+    await removeInstanceResources(inst.id)
+    deleteInstance(inst.id)
+  } catch (error) {
+    if (getInstanceById(inst.id)) {
+      updateInstance(inst.id, { status: 'deleting', error: 'deletion failed; retry the operation' })
+    }
+    throw error
+  }
+}
 
 function setSessionCookie(reply, token) {
   reply.setCookie(SESSION_COOKIE, token, {
@@ -566,11 +581,8 @@ fastify.post('/api/admin/users/:id/delete', async (req, reply) => {
   if (inst) {
     updateInstance(inst.id, { status: 'deleting', error: null })
     try {
-      await removeContainer(inst.container_name)
-      const { removeDshUpgradeBackups } = await import('./orchestrator.js')
-      await removeDshUpgradeBackups(inst.id)
+      await finishInstanceDeletion(inst)
     } catch (error) {
-      updateInstance(inst.id, { status: 'deleting', error: 'deletion failed; retry the operation' })
       req.log.error(error)
       return reply.code(500).send({ error: 'instance deletion failed; data was retained' })
     }
@@ -627,15 +639,11 @@ fastify.post('/api/admin/instances/:id/delete', async (req, reply) => {
   if (!inst) return reply.code(404).send({ error: 'not found' })
   updateInstance(inst.id, { status: 'deleting', error: null })
   try {
-    await removeContainer(inst.container_name)
-    const { removeDshUpgradeBackups } = await import('./orchestrator.js')
-    await removeDshUpgradeBackups(inst.id)
+    await finishInstanceDeletion(inst)
   } catch (error) {
-    updateInstance(inst.id, { status: 'deleting', error: 'deletion failed; retry the operation' })
     req.log.error(error)
     return reply.code(500).send({ error: 'instance deletion failed; data was retained' })
   }
-  deleteInstance(inst.id)
   return { ok: true }
 })
 

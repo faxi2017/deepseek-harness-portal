@@ -262,6 +262,34 @@ export function removeContainer(name) {
   })
 }
 
+async function removeUpgradeBackupsUnlocked(instance) {
+  for (const row of listDshUpgradeBackups(instance.id)) {
+    for (const volume of [row.backup_home_volume, row.backup_workspace_volume]) {
+      // Failed upgrades can legitimately have no snapshot yet.
+      if (volume === null) continue
+      if (!validUpgradeBackupName(instance.container_name, volume)) throw new Error('invalid stored upgrade backup')
+      if (await inspectObject('volume', volume)) await docker(['volume', 'rm', volume])
+      if (await inspectObject('volume', volume)) throw new Error(`volume "${volume}" still exists after removal`)
+    }
+  }
+}
+
+/** Remove every Docker resource owned by one instance under a single lock. */
+export async function removeInstanceResources(instanceId) {
+  const instance = getInstanceById(instanceId)
+  if (!instance) return
+  return withLifecycleLock(instance.container_name, async () => {
+    const current = getInstanceById(instanceId)
+    if (!current) return
+    await removeExistingContainerUnlocked(current.container_name)
+    for (const volume of [`${current.container_name}-home`, `${current.container_name}-workspace`]) {
+      if (await inspectObject('volume', volume)) await docker(['volume', 'rm', volume])
+      if (await inspectObject('volume', volume)) throw new Error(`volume "${volume}" still exists after removal`)
+    }
+    await removeUpgradeBackupsUnlocked(current)
+  })
+}
+
 /** Remove a stale container but keep its volumes (idempotent re-provision). */
 export function removeContainerKeepVolumes(name) {
   return withLifecycleLock(name, () => removeExistingContainerUnlocked(name))
@@ -485,14 +513,7 @@ export function scheduleDshUpgrade(instanceId, targetReleaseId, { requestedBy, r
 export async function removeDshUpgradeBackups(instanceId) {
   const instance = getInstanceById(instanceId)
   if (!instance) return
-  return withLifecycleLock(instance.container_name, async () => {
-    for (const row of listDshUpgradeBackups(instance.id)) {
-      for (const volume of [row.backup_home_volume, row.backup_workspace_volume]) {
-        if (!validUpgradeBackupName(instance.container_name, volume)) throw new Error('invalid stored upgrade backup')
-        if (await inspectObject('volume', volume)) await docker(['volume', 'rm', volume])
-      }
-    }
-  })
+  return withLifecycleLock(instance.container_name, () => removeUpgradeBackupsUnlocked(instance))
 }
 
 export async function containerRunning(name, { fresh = false } = {}) {

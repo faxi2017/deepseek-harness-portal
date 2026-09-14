@@ -21,7 +21,7 @@ mock.module('../src/orchestrator.js', { namedExports: {
   allocatePort: async () => { await new Promise((r) => setTimeout(r, 5)); if (full) throw new Error('full'); return port++ },
   containerName: (slug) => `dsh-${slug}`, containerRunning: async (name) => running.has(name), waitHealthy: async () => true,
   containerLogs: async () => '', dshWebToken: async () => 't'.repeat(43), provision: async (id) => { provisioned.push(id) },
-  removeContainer: async () => {}, restartContainer: async (name) => { restarted.push(name); running.add(name) },
+  removeContainer: async () => {}, removeInstanceResources: async () => {}, restartContainer: async (name) => { restarted.push(name); running.add(name) },
   scanInstancePlugins: async () => ({ plugins: [], updatedAt: Date.now() }),
   startContainer: async () => {}, stopContainer: async () => {}, verifyDockerRuntime: async () => {},
   uninstallInstancePlugin: async () => ({ plugins: [], updatedAt: Date.now(), recovered: true }),

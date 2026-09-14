@@ -45,8 +45,11 @@ mock.module('../src/docker.js', { namedExports: {
   applyFirewall: async () => {},
 } })
 
-const { db, createDshRelease, createInstanceRow, createUser, getDefaultDshRelease, getDshUpgrade, getInstanceById, updateInstance } = await import('../src/db.js')
-const { containerName, scheduleDshUpgrade } = await import('../src/orchestrator.js')
+const {
+  db, createDshRelease, createDshUpgrade, createInstanceRow, createUser, deleteInstance,
+  getDefaultDshRelease, getDshUpgrade, getInstanceById, updateDshUpgrade, updateInstance,
+} = await import('../src/db.js')
+const { containerName, removeInstanceResources, scheduleDshUpgrade } = await import('../src/orchestrator.js')
 
 async function until(predicate, timeout = 2_000) {
   const deadline = Date.now() + timeout
@@ -93,6 +96,32 @@ test('an unhealthy target release restores the original image and two volume sna
   } finally {
     await new Promise((resolve) => health.close(resolve))
   }
+})
+
+test('instance deletion removes all Docker resources and tolerates failed upgrades without snapshots', async () => {
+  const userId = createUser({ username: 'delete-me', name: 'Delete Me' })
+  const release = getDefaultDshRelease()
+  const name = containerName('delete-me')
+  const instanceId = Number(createInstanceRow({ userId, slug: 'delete-me', containerName: name, hostPort: 28652, releaseId: release.id }))
+  updateInstance(instanceId, { status: 'deleting' })
+  containers.set(name, { Config: { Labels: { 'dsh.portal.managed': 'true' } }, State: { Running: false }, Image: oldImage })
+  volumes.add(`${name}-home`); volumes.add(`${name}-workspace`)
+
+  const failed = createDshUpgrade({ instanceId, fromReleaseId: release.id, toReleaseId: release.id, operation: 'upgrade', requestedBy: userId })
+  updateDshUpgrade(failed.id, { status: 'failed', finished_at: Date.now() })
+  const completed = createDshUpgrade({ instanceId, fromReleaseId: release.id, toReleaseId: release.id, operation: 'upgrade', requestedBy: userId })
+  const backupHome = `${name}-upgrade-${completed.id}-home-backup`
+  const backupWorkspace = `${name}-upgrade-${completed.id}-workspace-backup`
+  updateDshUpgrade(completed.id, { status: 'completed', backup_home_volume: backupHome, backup_workspace_volume: backupWorkspace })
+  volumes.add(backupHome); volumes.add(backupWorkspace)
+
+  await removeInstanceResources(instanceId)
+  assert.equal(containers.has(name), false)
+  assert.equal([...volumes].some((volume) => volume.startsWith(name)), false)
+
+  deleteInstance(instanceId)
+  assert.equal(getInstanceById(instanceId), null)
+  assert.equal(db.prepare('SELECT count(*) n FROM dsh_upgrade_history WHERE instance_id=?').get(instanceId).n, 0)
 })
 
 test.after(() => {

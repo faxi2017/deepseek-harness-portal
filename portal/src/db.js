@@ -434,10 +434,14 @@ export function updateInstanceUnlessDeleting(id, fields) {
 }
 
 export function deleteInstance(id) {
-  db.prepare('DELETE FROM instances WHERE id = ?').run(id)
+  db.transaction((instanceId) => {
+    db.prepare('DELETE FROM dsh_upgrade_history WHERE instance_id = ?').run(instanceId)
+    db.prepare('DELETE FROM instances WHERE id = ?').run(instanceId)
+  })(Number(id))
 }
 
 export function deleteUser(id) {
+  db.prepare('DELETE FROM dsh_upgrade_history WHERE instance_id IN (SELECT id FROM instances WHERE user_id = ?)').run(id)
   db.prepare('DELETE FROM instances WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id)
   db.prepare('DELETE FROM personal_usage_checkpoints WHERE user_id = ?').run(id)

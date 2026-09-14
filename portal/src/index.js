@@ -210,8 +210,8 @@ async function uniqueSlug(base) {
   return slug
 }
 
-// Serialize allocation so concurrent registrations cannot claim the same port.
-let registrationQueue = Promise.resolve()
+// Serialize allocation so concurrent registrations and admin recovery cannot claim the same port.
+let instanceCreationQueue = Promise.resolve()
 fastify.post('/api/auth/register', async (req, reply) => {
   if (!registrationEnabled()) return reply.code(403).send({ error: 'registration is disabled' })
   const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : ''
@@ -227,7 +227,7 @@ fastify.post('/api/auth/register', async (req, reply) => {
     if (!enforceRateLimit(req, reply, RATE_POLICIES.inviteGlobal, 'global')) return
     if (String(req.body?.inviteCode ?? '').trim() !== invite) return reply.code(403).send({ error: 'invalid invitation code' })
   }
-  const operation = registrationQueue.catch(() => {}).then(async () => {
+  const operation = instanceCreationQueue.catch(() => {}).then(async () => {
     if (getUserByUsername(username)) return reply.code(409).send({ error: 'username already taken' })
     let hostPort
     try { hostPort = await allocatePort() }
@@ -245,7 +245,7 @@ fastify.post('/api/auth/register', async (req, reply) => {
     const instance = getInstanceById(result.instId)
     return { user: publicUser(getUserById(result.userId)), instance: { ...instance, url: instanceUrl(instance) }, csrfToken: session.csrfToken }
   })
-  registrationQueue = operation
+  instanceCreationQueue = operation
   return operation
 })
 
@@ -569,6 +569,27 @@ fastify.post('/api/admin/users/:id/reset-password', async (req, reply) => {
   closeUserSockets(user.id)
   if (admin.id === user.id) clearSessionAndCookies(req, reply)
   return { ok: true, signedOut: admin.id === user.id }
+})
+
+fastify.post('/api/admin/users/:id/instance', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return
+  const userId = Number(req.params.id)
+  const operation = instanceCreationQueue.catch(() => {}).then(async () => {
+    const user = getUserById(userId)
+    if (!user) return reply.code(404).send({ error: 'not found' })
+    if (user.role === 'admin') return reply.code(400).send({ error: 'admin accounts cannot have instances' })
+    if (getInstanceByUserId(user.id)) return reply.code(409).send({ error: 'user already has an instance' })
+    let hostPort
+    try { hostPort = await allocatePort() }
+    catch { return reply.code(503).send({ error: 'no instance capacity available; contact admin' }) }
+    const slug = await uniqueSlug(slugify(user.username) + config.instanceSlugSuffix)
+    const instId = createInstanceRow({ userId: user.id, slug, containerName: containerName(slug), hostPort })
+    provision(instId, { setDefaultModel: true }).catch((err) => console.error('[provision]', err))
+    const instance = getInstanceById(instId)
+    return { ok: true, instance: { ...instance, url: instanceUrl(instance) } }
+  })
+  instanceCreationQueue = operation
+  return operation
 })
 
 fastify.post('/api/admin/users/:id/delete', async (req, reply) => {

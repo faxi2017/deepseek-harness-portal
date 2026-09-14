@@ -352,7 +352,9 @@ export function setUserPassword(id, passwordHash) {
 }
 
 export function listUsers() {
-  return db.prepare('SELECT id, email, username, name, role, created_at FROM users ORDER BY id').all()
+  return db.prepare(`SELECT u.id, u.email, u.username, u.name, u.role, u.created_at,
+    EXISTS(SELECT 1 FROM instances i WHERE i.user_id = u.id) AS has_instance
+    FROM users u ORDER BY u.id`).all()
 }
 
 // ---- settings (admin controls) ----

@@ -126,6 +126,8 @@ const ERROR_MESSAGES = {
   'registrationEnabled must be boolean': '注册设置无效，请刷新页面后重新设置',
   'not found': '该用户或实例不存在，请刷新页面',
   'cannot delete an admin account': '不能删除管理员账号',
+  'admin accounts cannot have instances': '管理员账号不创建个人实例',
+  'user already has an instance': '该用户已有实例，请刷新页面查看状态',
   'deletion failed; retry the operation': '删除失败，请重试',
   'instance deletion failed; data was retained': '实例删除失败，请联系管理员查看日志',
   'health check timed out': '实例启动超时，请联系管理员查看日志',
@@ -562,7 +564,7 @@ function drawUsers() {
       <td>${escapeHtml(u.name || '')}</td>
       <td><span class="badge ${u.role === 'admin' ? 'badge-running' : 'badge-stopped'}">${u.role === 'admin' ? '管理员' : '普通用户'}</span></td>
       <td>${fmtDate(u.created_at)}</td>
-      <td>${u.role !== 'admin' ? `<button class="btn btn-ghost btn-sm" data-uid="${u.id}" data-act="reset-password">${icon('key', 14)} 重置密码</button> <button class="btn btn-danger btn-sm" data-uid="${u.id}" data-act="deluser">${icon('trash', 14)} 删除</button>` : ''}</td>
+      <td>${u.role !== 'admin' ? `${!u.has_instance ? `<button class="btn btn-ghost btn-sm" data-uid="${u.id}" data-act="create-instance">${icon('server', 14)} 创建容器</button> ` : ''}<button class="btn btn-ghost btn-sm" data-uid="${u.id}" data-act="reset-password">${icon('key', 14)} 重置密码</button> <button class="btn btn-danger btn-sm" data-uid="${u.id}" data-act="deluser">${icon('trash', 14)} 删除</button>` : ''}</td>
     </tr>`).join('')
   $('#users-table').innerHTML = rows
     ? `<div class="table-wrap"><table><thead><tr><th>账号</th><th>显示名称</th><th>角色</th><th>注册日期</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
@@ -853,6 +855,17 @@ $('#users-table').addEventListener('click', async (e) => {
         toast('密码已重置，该用户的原有登录已失效', 'ok')
       } catch (err) { $('#reset-msg').textContent = err.message }
     })
+    return
+  }
+  if (btn.dataset.act === 'create-instance') {
+    const user = usersCache.find((u) => String(u.id) === btn.dataset.uid)
+    const ok = await confirmModal('创建容器', `将为 ${user?.username ?? '该用户'} 创建新的 DSH 容器，并使用当前默认 DSH 版本。`, '创建容器', false)
+    if (!ok) return
+    try {
+      await withButtonLoading(btn, '正在创建…', () => api(`/api/admin/users/${btn.dataset.uid}/instance`, { method: 'POST' }))
+      toast('容器正在创建，请稍后在实例管理中查看状态', 'ok')
+      renderStats(); renderUsers(); renderInstances()
+    } catch (err) { toast(err.message, 'err') }
     return
   }
   const ok = await confirmModal('删除用户', '确定删除此用户及其工作空间中的全部数据吗？此操作无法撤销。')

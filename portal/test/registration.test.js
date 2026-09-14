@@ -28,7 +28,7 @@ mock.module('../src/orchestrator.js', { namedExports: {
 } })
 const { fastify } = await import('../src/index.js')
 if (!fastify.server.listening) await once(fastify.server, 'listening')
-const { createDshRelease, db, getUserByUsername, setSetting, setInviteCode, updateDshRelease } = await import('../src/db.js')
+const { createDshRelease, createUser, db, getUserByUsername, setSetting, setInviteCode, updateDshRelease } = await import('../src/db.js')
 const origin = process.env.PORTAL_ORIGIN
 const post = (path, body, headers = {}) => fetch(origin + path, { method: 'POST', headers: {
   'content-type': 'application/json', origin, ...headers,
@@ -115,6 +115,23 @@ test('users can restart only their own instance and administrators can restart a
   assert.equal((await post(`/api/admin/instances/${instance.id}/restart`, {}, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken })).status, 200)
   assert.equal(restarted.at(-1), instance.container_name)
   assert.ok(db.prepare('SELECT last_active FROM instances WHERE id=?').get(instance.id).last_active >= instance.created_at)
+})
+
+test('administrator can create exactly one replacement instance for a user without one', async () => {
+  const userId = createUser({ username: 'replacement', name: 'Replacement' })
+  const adminLogin = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminSession = await adminLogin.json()
+  const path = `/api/admin/users/${userId}/instance`
+
+  const created = await post(path, {}, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken })
+  assert.equal(created.status, 200)
+  const result = await created.json()
+  assert.equal(result.instance.user_id, userId)
+  assert.equal(result.instance.status, 'provisioning')
+  assert.ok(provisioned.includes(result.instance.id))
+  assert.equal((await post(path, {}, { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken })).status, 409)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM instances WHERE user_id=?').get(userId).n, 1)
 })
 
 for (const contentType of ['application/json', 'application/x-www-form-urlencoded']) {

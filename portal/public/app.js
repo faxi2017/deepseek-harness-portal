@@ -296,16 +296,18 @@ function setAdminTab(tab) {
   $('#panel-users').classList.toggle('hidden', tab !== 'users')
   $('#panel-settings').classList.toggle('hidden', tab !== 'settings')
   $('#panel-gateway').classList.toggle('hidden', tab !== 'gateway')
+  $('#panel-default-models').classList.toggle('hidden', tab !== 'default-models')
   $('#panel-plugins').classList.toggle('hidden', tab !== 'plugins')
   $('#panel-dsh-versions').classList.toggle('hidden', tab !== 'dsh-versions')
   $('#panel-terminal').classList.toggle('hidden', tab !== 'terminal')
   if (tab !== 'terminal') disconnectTerminal()
-  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', plugins: '默认插件', 'dsh-versions': 'DSH 版本管理', terminal: '容器终端' }
+  const titles = { instances: '实例管理', users: '用户管理', settings: '平台设置', gateway: '模型网关', 'default-models': '默认模型', plugins: '默认插件', 'dsh-versions': 'DSH 版本管理', terminal: '容器终端' }
   $('#topbar-title').textContent = titles[tab] || '概览'
   if (tab === 'instances') renderInstances()
   else if (tab === 'users') renderUsers()
   else if (tab === 'settings') renderSettings()
-  else if (tab === 'gateway') renderGateway()
+  else if (tab === 'gateway') renderGateway(true)
+  else if (tab === 'default-models') renderGateway(false)
   else if (tab === 'plugins') renderPlugins(true)
   else if (tab === 'dsh-versions') renderDshVersions()
   else if (tab === 'terminal') renderTerminal()
@@ -1026,7 +1028,8 @@ $('#refresh-btn').addEventListener('click', () => {
   if (!$('#panel-terminal').classList.contains('hidden')) { renderTerminal(); return }
   if (me?.role === 'admin' && !$('#panel-plugins').classList.contains('hidden')) { renderPlugins(); return }
   if (me?.role === 'admin' && !$('#panel-dsh-versions').classList.contains('hidden')) { renderDshVersions(); return }
-  if (me?.role === 'admin' && !$('#panel-gateway').classList.contains('hidden')) { renderGateway(); return }
+  if (me?.role === 'admin' && !$('#panel-gateway').classList.contains('hidden')) { renderGateway(true); return }
+  if (me?.role === 'admin' && !$('#panel-default-models').classList.contains('hidden')) { renderGateway(false); return }
   if (me?.role !== 'admin' && !$('#user-gateway-view').classList.contains('hidden')) { renderMyGatewayUsage(); return }
   boot()
 })
@@ -1068,23 +1071,30 @@ const exactTokens = (n) => Number(n ?? 0).toLocaleString('zh-CN')
 function gatewayChecks(models, selected = []) {
   return models.map((m) => `<label class="check"><input type="checkbox" name="models" value="${escapeHtml(m.id)}" ${selected.includes(m.id) ? 'checked' : ''} /> ${escapeHtml(m.name)}${m.enabled ? '' : '（停用）'}</label>`).join('') || '<p class="hint">请先添加模型。</p>'
 }
-async function renderGateway() {
+async function renderGateway(includeUsage = true) {
   try {
     const data = await api('/api/admin/gateway')
     gatewayCache = data
-    $('#gateway-status').textContent = !data.available ? '模型网关服务尚未部署。请按部署文档启动 Bifrost 并启用模型入口。'
+    const status = !data.available ? '模型网关服务尚未部署。请按部署文档启动 Bifrost 并启用模型入口。'
       : `${data.engine} · ${data.healthy ? '网关连接正常' : '网关连接异常'} · ${data.enabled ? '平台模型已启用' : '平台模型已停用'} · ${data.day}`
+    $('#gateway-status').textContent = status
+    $('#default-model-status').textContent = status
     $('#gateway-defaults').elements.enabled.checked = data.enabled
     $('#gateway-defaults').elements.defaultEnabled.checked = data.defaults.enabled
     $('#gateway-default-quota').value = data.defaults.dailyTokens
     $('#gateway-default-models').innerHTML = gatewayChecks(data.models, data.defaults.models)
     $('#gateway-models').innerHTML = data.models.length ? `<div class="table-wrap"><table><thead><tr><th>模型</th><th>接口地址</th><th>状态</th><th>操作</th></tr></thead><tbody>${data.models.map((m) => `<tr><td>${escapeHtml(m.name)}<div class="hint">${m.upstreamModels.map(escapeHtml).join('<br>')}</div></td><td class="cell-mono">${escapeHtml(m.base_url)}</td><td>${m.sync_error ? escapeHtml(m.sync_error) : m.enabled ? '已启用' : '已停用'}<div class="hint">密钥${m.hasKey ? '已保存' : '未配置'}</div></td><td><div class="cell-actions"><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="edit">编辑</button><button class="btn btn-ghost btn-sm" data-model="${m.id}" data-action="sync">重试同步</button><button class="btn btn-danger btn-sm" data-model="${m.id}" data-action="delete">删除</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">尚未添加平台模型。</p>'
     $('#gateway-users').innerHTML = data.users.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>可用模型</th><th>今日用量 / 限额</th><th>配置状态</th><th>最近下发时间</th><th>操作</th></tr></thead><tbody>${data.users.map((u) => `<tr><td>${escapeHtml(u.username)}<div class="hint">${u.enabled ? '已启用' : '未启用'}</div></td><td>${u.models.map((id) => escapeHtml(data.models.find((m) => m.id === id)?.name ?? id)).join('<br>') || '—'}</td><td>${exactTokens(u.chargedTokens)} / ${exactTokens(u.dailyTokens)}<div class="hint">预留 ${exactTokens(u.reservedTokens)} · 可用 ${exactTokens(u.remainingTokens)}</div></td><td>${u.syncError ? escapeHtml(u.syncError) : u.syncedAt ? '已下发' : '尚未下发'}</td><td>${fmtDateTime(u.syncedAt)}</td><td><button class="btn btn-ghost btn-sm" data-policy="${u.id}">配置</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">注册用户后可在此分配模型和额度。</p>'
-    const form = $('#gateway-usage-filter')
-    if (!form.elements.from.value) form.elements.from.value = new Date(Date.parse(data.day) - 29 * 86400000).toISOString().slice(0, 10)
-    if (!form.elements.to.value) form.elements.to.value = data.day
-    await renderGatewayUsage()
-  } catch (err) { $('#gateway-status').textContent = err.message }
+    if (includeUsage) {
+      const form = $('#gateway-usage-filter')
+      if (!form.elements.from.value) form.elements.from.value = new Date(Date.parse(data.day) - 29 * 86400000).toISOString().slice(0, 10)
+      if (!form.elements.to.value) form.elements.to.value = data.day
+      await renderGatewayUsage()
+    }
+  } catch (err) {
+    $('#gateway-status').textContent = err.message
+    $('#default-model-status').textContent = err.message
+  }
 }
 function editGatewayModel(id) {
   const m = gatewayCache?.models.find((row) => row.id === id)
@@ -1106,7 +1116,7 @@ function editGatewayModel(id) {
         apiKey: fd.get('apiKey'), maxOutputTokens: Number(fd.get('maxOutputTokens')), enabled: fd.get('enabled') === 'on',
       } }))
       $('#gm-key').value = ''
-      closeModal(); await renderGateway()
+      closeModal(); await renderGateway(false)
       toast(result.model.sync_error || '模型已保存并同步', result.model.sync_error ? 'err' : 'ok')
     } catch (err) { $('#gateway-modal-msg').textContent = err.message }
   })
@@ -1130,7 +1140,7 @@ function editGatewayPolicy(id) {
         await api(`/api/admin/gateway/users/${id}`, { method: 'POST', body: { enabled: fd.get('enabled') === 'on', dailyTokens: Number(fd.get('dailyTokens')), models: fd.getAll('models') } })
         if (sync) await api(`/api/admin/gateway/users/${id}/sync`, { method: 'POST', body: { setDefault: fd.get('setDefault') === 'on' } })
       })
-      closeModal(); renderGateway(); toast(sync ? '权限已保存，模型已下发' : '权限已保存', 'ok')
+      closeModal(); renderGateway(false); toast(sync ? '权限已保存，模型已下发' : '权限已保存', 'ok')
     } catch (err) { $('#gateway-policy-msg').textContent = err.message }
   })
   $('#gateway-rotate').addEventListener('click', async (e) => {
@@ -1162,11 +1172,11 @@ $('#gateway-models').addEventListener('click', async (e) => {
     if (!ok) return
     try {
       await withButtonLoading(button, '正在删除…', () => api(`/api/admin/gateway/models/${button.dataset.model}`, { method: 'DELETE' }))
-      await renderGateway(); toast('平台模型已删除', 'ok')
+      await renderGateway(false); toast('平台模型已删除', 'ok')
     } catch (err) { toast(err.message, 'err') }
     return
   }
-  try { await withButtonLoading(button, '正在同步…', () => api(`/api/admin/gateway/models/${button.dataset.model}/sync`, { method: 'POST' })); renderGateway(); toast('同步成功', 'ok') }
+  try { await withButtonLoading(button, '正在同步…', () => api(`/api/admin/gateway/models/${button.dataset.model}/sync`, { method: 'POST' })); renderGateway(false); toast('同步成功', 'ok') }
   catch (err) { toast(err.message, 'err') }
 })
 $('#gateway-users').addEventListener('click', (e) => { const b = e.target.closest('[data-policy]'); if (b) editGatewayPolicy(b.dataset.policy) })
@@ -1177,7 +1187,7 @@ $('#gateway-defaults').addEventListener('submit', async (e) => {
     await withButtonLoading(e.target.querySelector('button[type="submit"]'), '正在保存…', () => api('/api/admin/gateway/settings', { method: 'POST', body: {
       enabled: fd.get('enabled') === 'on', defaults: { enabled: fd.get('defaultEnabled') === 'on', dailyTokens: Number(fd.get('dailyTokens')), models: fd.getAll('models') },
     } }))
-    toast('默认配置已保存', 'ok'); renderGateway()
+    toast('默认配置已保存', 'ok'); renderGateway(false)
   } catch (err) { toast(err.message, 'err') }
 })
 $('#gateway-sync-all').addEventListener('click', async (e) => {
@@ -1188,7 +1198,7 @@ $('#gateway-sync-all').addEventListener('click', async (e) => {
     status.textContent = '正在逐个启动实例并下发配置，请勿关闭页面…'
     const result = await withButtonLoading(e.currentTarget, '正在下发…', () => api('/api/admin/gateway/sync-all', { method: 'POST' }))
     status.textContent = `已更新 ${result.updated} 个用户，成功下发 ${result.synced} 个${result.failed ? `，失败 ${result.failed} 个，可在下方查看原因` : ''}。`
-    await renderGateway()
+    await renderGateway(false)
     toast(result.failed ? '批量下发已完成，部分用户失败' : '已下发至所有用户', result.failed ? 'err' : 'ok')
   } catch (err) {
     status.textContent = err.message

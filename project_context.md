@@ -48,7 +48,7 @@
 | `scripts/dsh-portal.service` | `/home/codes/deepseek-harness-portal` 的 systemd 模板，默认 root + 现有 Docker |
 | `DEPLOYMENT.md` | 首次启动、本地修改、Git 同步、服务器更新、DSH 升级和排查 |
 
-模型网关已接入独立 Bifrost v2.0.0 容器，见 `MODEL_GATEWAY.md`；后台增加“模型网关”页。`gateway-store.js` 管理权限/加密/额度流水，`gateway.js` 提供独立推理入口，`bifrost.js` 管理模型和内部凭证，`gateway-dsh.js` 通过 DSH 原生接口下发配置，`gateway-admin.js` 提供后台接口。`personal-usage.js` 从运行中用户 DSH 的会话历史同步已完成的个人模型用量，并以幂等事件记录写入 SQLite；不读取或存储个人 Key、提示词和回复。仍没有独立前端构建、CI 发布流水线或批量升级队列。Portal 使用 Docker CLI 控制同一台主机的实例，当前应只运行一个 Portal 进程。
+模型网关已接入独立 Bifrost v2.0.0 容器，见 `MODEL_GATEWAY.md`；后台左侧“默认模型”页管理平台模型、默认额度、用户权限和批量下发，“模型网关”页只展示用量分析。`gateway-store.js` 管理权限/加密/额度流水，`gateway.js` 提供独立推理入口，`bifrost.js` 管理模型和内部凭证，`gateway-dsh.js` 通过 DSH 原生接口下发配置，`gateway-admin.js` 提供后台接口。`personal-usage.js` 从运行中用户 DSH 的会话历史同步已完成的个人模型用量，并以幂等事件记录写入 SQLite；不读取或存储个人 Key、提示词和回复。仍没有独立前端构建、CI 发布流水线或批量升级队列。Portal 使用 Docker CLI 控制同一台主机的实例，当前应只运行一个 Portal 进程。
 
 ## 3. 运行与数据边界
 

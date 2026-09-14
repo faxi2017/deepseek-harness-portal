@@ -125,6 +125,9 @@
         <button class="nav-item" data-tab="gateway">
           <span class="nav-icon" data-icon="key"></span> 模型网关
         </button>
+        <button class="nav-item" data-tab="default-models">
+          <span class="nav-icon" data-icon="sliders"></span> 默认模型
+        </button>
         <button class="nav-item" data-tab="plugins">
           <span class="nav-icon" data-icon="sliders"></span> 默认插件
         </button>
@@ -191,6 +194,9 @@
           </button>
           <button class="nav-item" data-tab="gateway">
             <span class="nav-icon" data-icon="key"></span> 模型网关
+          </button>
+          <button class="nav-item" data-tab="default-models">
+            <span class="nav-icon" data-icon="sliders"></span> 默认模型
           </button>
           <button class="nav-item" data-tab="plugins">
             <span class="nav-icon" data-icon="sliders"></span> 默认插件
@@ -386,13 +392,9 @@
             </div>
           </div>
           <div class="panel hidden" id="panel-gateway">
-            <div class="panel-head"><h2>模型网关</h2><span class="hint">统一配置 · 用量洞察</span></div>
+            <div class="panel-head"><h2>模型网关</h2><span class="hint">用量洞察</span></div>
             <p id="gateway-status" class="hint" role="status">正在加载…</p>
-            <div class="usage-tabs" role="tablist" aria-label="模型网关页面">
-              <button class="btn active" id="gateway-analytics-tab" role="tab" aria-selected="true" aria-controls="gateway-analytics-view">用量分析</button>
-              <button class="btn" id="gateway-config-tab" role="tab" aria-selected="false" aria-controls="gateway-config-view">模型与额度配置</button>
-            </div>
-            <section id="gateway-analytics-view" role="tabpanel" aria-labelledby="gateway-analytics-tab">
+            <section id="gateway-analytics-view">
               <div class="usage-heading"><div><h2>Token 用量概览</h2><p class="hint">从整体趋势到每位用户，查看平台与个人模型的消耗情况</p></div><button class="btn btn-ghost" id="usage-export" disabled>导出明细 CSV</button></div>
               <form id="gateway-usage-filter" class="usage-filter">
                 <div class="usage-presets" role="group" aria-label="快捷日期范围">
@@ -428,7 +430,10 @@
               </div>
               <p class="hint usage-footnote">平台请求与已同步的 DSH 个人模型请求一起展示。个人模型仅在返回已完成用量后计入，不扣平台额度；系统不保存个人 Key、提示词或回复。实际 Token = 输入 + 输出。</p>
             </section>
-            <section id="gateway-config-view" class="hidden" role="tabpanel" aria-labelledby="gateway-config-tab">
+          </div>
+          <div class="panel hidden" id="panel-default-models">
+            <div class="panel-head"><h2>默认模型</h2><span class="hint">平台模型 · 默认额度</span></div>
+            <p id="default-model-status" class="hint" role="status">正在加载…</p>
             <div class="panel-head"><h3>平台模型</h3><button class="btn btn-primary" id="gateway-add-model">添加模型</button></div>
             <div id="gateway-models"></div>
             <h3>新用户默认额度</h3>
@@ -444,7 +449,6 @@
             <h3>用户模型与额度</h3>
             <p class="hint">北京时间每天 00:00 重置，输入 + 输出 Token 合计。调用前预留额度，结束后按实际用量结算；中断且无用量回执时保留预估扣减。平台模型当前支持文本和工具调用。</p>
             <div id="gateway-users"></div>
-            </section>
           </div>
         </section>
       </main>

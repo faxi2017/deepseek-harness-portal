@@ -72,9 +72,14 @@ upstream.post('/v1/chat/completions', async (req, reply) => {
 await upstream.listen({ host: '127.0.0.1', port: 0 })
 const gateway = buildGateway({ upstream: `http://127.0.0.1:${upstream.server.address().port}`, headers: () => ({ authorization: 'Basic test-gateway' }), timeoutMs: 200 })
 const admin = Fastify()
+let bulkPrepared = []
+let bulkIssued = []
+let bulkFailureUser = null
 registerGatewayAdmin(admin, {
   requireAdmin: (req, reply) => req.headers.authorization === 'admin' ? { id: 1 } : (reply.code(403).send({ error: 'admin only' }), null),
   requireUser: (req) => ({ id: Number(req.headers['test-user']) }),
+  prepareInstance: async (userId) => { bulkPrepared.push(userId) },
+  issueDsh: async (userId) => { bulkIssued.push(userId); if (userId === bulkFailureUser) throw new Error('fixture failure') },
 })
 let uid, other, model, token
 test.beforeEach(() => {
@@ -89,6 +94,7 @@ test.beforeEach(() => {
   store.savePolicy(other, { enabled: false, models: [], dailyTokens: 100000 })
   token = store.decrypt(store.getPolicy(uid).secret)
   mode = 'success'; upstreamCalls = 0; providerKeyName = undefined; providerModels = undefined; virtualKeyModels = undefined
+  bulkPrepared = []; bulkIssued = []; bulkFailureUser = null
   setSetting('gateway_enabled', 'true')
 })
 test.after(async () => { await gateway.close(); await upstream.close(); await admin.close(); db.close(); rmSync(dir, { recursive: true, force: true }) })
@@ -241,6 +247,29 @@ test('saving a user policy clears its last successful issue time until it is iss
   db.prepare('UPDATE gateway_users SET synced_at=? WHERE user_id=?').run(1770000000000, uid)
   store.savePolicy(uid, { enabled: true, models: [model.id], dailyTokens: 100000 })
   assert.equal(store.publicPolicy(uid).syncedAt, null)
+})
+
+test('bulk issue applies saved defaults to every user and continues after one instance fails', async () => {
+  store.saveDefaults({ enabled: true, models: [model.id], dailyTokens: 200000 })
+  bulkFailureUser = uid
+  const response = await admin.inject({ method: 'POST', url: '/api/admin/gateway/sync-all', headers: { authorization: 'admin' } })
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(bulkPrepared, [uid, other])
+  assert.deepEqual(bulkIssued, [uid, other])
+  assert.deepEqual(response.json(), {
+    total: 2, updated: 2, synced: 1, failed: 1,
+    results: [
+      { userId: uid, username: 'alice', ok: false, synced: false, updated: true, error: '实例启动或模型配置下发失败，请检查该用户实例后重试。' },
+      { userId: other, username: 'bob', ok: true, synced: true, updated: true },
+    ],
+  })
+  for (const userId of [uid, other]) {
+    const policy = store.publicPolicy(userId)
+    assert.equal(policy.enabled, true)
+    assert.equal(policy.dailyTokens, 200000)
+    assert.deepEqual(policy.models, [model.id])
+  }
+  assert.match(store.publicPolicy(uid).syncError, /下发失败/)
 })
 
 test('deleting a platform model removes gateway resources and active policy references but preserves usage history', async () => {

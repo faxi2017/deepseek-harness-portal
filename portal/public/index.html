@@ -437,8 +437,9 @@
               <label class="check"><input type="checkbox" name="defaultEnabled" /> 新注册用户自动分配平台模型</label>
               <div class="field"><label for="gateway-default-quota">每日 Token 限额（0 为禁止调用）</label><input id="gateway-default-quota" name="dailyTokens" type="number" min="0" max="1000000000" step="1" required /></div>
               <fieldset class="gateway-model-checks"><legend>默认可用模型</legend><div id="gateway-default-models"></div></fieldset>
-              <button type="submit" class="btn btn-primary">保存默认配置</button>
-              <p class="hint">默认配置只对之后首次分配的用户生效。已有用户请在下表单独设置。</p>
+              <div class="cell-actions"><button type="submit" class="btn btn-primary">保存默认配置</button><button type="button" class="btn btn-ghost" id="gateway-sync-all">下发至所有用户</button></div>
+              <p class="hint">保存只影响之后首次分配的用户；“下发至所有用户”会用已保存的默认配置覆盖全部已有用户的模型和额度，停止的实例会自动启动。</p>
+              <p id="gateway-bulk-status" class="hint" role="status"></p>
             </form>
             <h3>用户模型与额度</h3>
             <p class="hint">北京时间每天 00:00 重置，输入 + 输出 Token 合计。调用前预留额度，结束后按实际用量结算；中断且无用量回执时保留预估扣减。平台模型当前支持文本和工具调用。</p>

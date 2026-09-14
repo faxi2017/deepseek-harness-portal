@@ -1,12 +1,56 @@
 import { randomUUID } from 'node:crypto'
 import { config } from './config.js'
-import { db, getUserById, listUsers, getSetting, setSetting } from './db.js'
+import { db, getInstanceByUserId, getUserById, listUsers, getSetting, setSetting, updateInstanceUnlessDeleting } from './db.js'
 import { allModels, encrypt, getModel, publicModel, publicPolicy, savePolicy, saveDefaults,
   deleteModelConfig, rotateToken, gatewayEnabled, gatewayDay, routesForModel, saveModelRoutes } from './gateway-store.js'
 import { deleteModel, syncModel, bifrost } from './bifrost.js'
 import { syncDsh } from './gateway-dsh.js'
 import { gatewayAnalytics, gatewayAnalyticsForUser } from './gateway-analytics.js'
 import { syncPersonalUsage } from './personal-usage.js'
+import { containerRunning, startContainer, waitHealthy } from './orchestrator.js'
+
+async function prepareGatewayInstance(userId) {
+  const instance = getInstanceByUserId(userId)
+  if (!instance || ['deleting', 'provisioning', 'upgrading', 'failed'].includes(instance.status)) {
+    throw new Error('用户实例当前不可下发，请先检查实例状态。')
+  }
+  if (!(await containerRunning(instance.container_name, { fresh: true }))) await startContainer(instance.container_name)
+  if (!(await waitHealthy(instance.host_port, config.instanceStartTimeoutMs, instance.container_name))) {
+    throw new Error('用户实例启动后未通过健康检查。')
+  }
+  if (!updateInstanceUnlessDeleting(instance.id, { status: 'running', error: null, last_active: Date.now() })) {
+    throw new Error('用户实例状态已变化，请重试。')
+  }
+}
+
+export async function applyGatewayDefaultsToUsers(users, defaults, { prepareInstance = prepareGatewayInstance, issueDsh = syncDsh } = {}) {
+  const results = []
+  for (const user of users) {
+    let updated = false
+    try {
+      savePolicy(user.id, defaults)
+      updated = true
+      if (!defaults.enabled) {
+        results.push({ userId: user.id, username: user.username, ok: true, synced: false, updated: true })
+        continue
+      }
+      await prepareInstance(user.id)
+      await issueDsh(user.id)
+      results.push({ userId: user.id, username: user.username, ok: true, synced: true, updated: true })
+    } catch {
+      const error = '实例启动或模型配置下发失败，请检查该用户实例后重试。'
+      db.prepare('UPDATE gateway_users SET sync_error=? WHERE user_id=?').run(error, user.id)
+      results.push({ userId: user.id, username: user.username, ok: false, synced: false, updated, error })
+    }
+  }
+  return {
+    total: results.length,
+    updated: results.filter((result) => result.updated).length,
+    synced: results.filter((result) => result.synced).length,
+    failed: results.filter((result) => !result.ok).length,
+    results,
+  }
+}
 
 export function normalizeBaseUrl(value) {
   const url = new URL(value)
@@ -14,7 +58,7 @@ export function normalizeBaseUrl(value) {
   return url.href.replace(/\/+$/, '').replace(/\/chat\/completions$/, '')
 }
 
-export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
+export function registerGatewayAdmin(app, { requireAdmin, requireUser, prepareInstance, issueDsh }) {
   const guarded = (handler) => async (req, reply) => {
     if (!requireAdmin(req, reply)) return
     try { return await handler(req, reply) }
@@ -38,6 +82,12 @@ export function registerGatewayAdmin(app, { requireAdmin, requireUser }) {
     try { saveDefaults(req.body.defaults) } catch (e) { invalid(e.message) }
     setSetting('gateway_enabled', String(req.body.enabled))
     return { ok: true }
+  }))
+  app.post('/api/admin/gateway/sync-all', guarded(async () => {
+    if (!config.gatewayEnabled) invalid('服务器尚未启用模型网关，请先启动 Bifrost 并设置 MODEL_GATEWAY_ENABLED=true。')
+    const defaults = JSON.parse(getSetting('gateway_defaults', '{"enabled":false,"dailyTokens":100000,"models":[]}'))
+    const users = listUsers().filter((user) => user.role !== 'admin')
+    return applyGatewayDefaultsToUsers(users, defaults, { prepareInstance, issueDsh })
   }))
   app.post('/api/admin/gateway/models', guarded(async (req) => {
     const body = req.body ?? {}

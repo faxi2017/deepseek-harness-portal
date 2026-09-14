@@ -39,7 +39,7 @@ node --env-file=.env scripts/start-gateway.mjs
 1. 管理员进入“模型网关”，添加名称、上游模型 ID、基础地址、API Key、单次最大输出 Token。
 2. 本版本后台接入兼容 OpenAI Chat Completions 的模型服务。地址填 `https://example.com/v1`；粘贴完整 `/v1/chat/completions` 也会自动规范化。API Key 输入框留空表示保留原密钥，查询接口不回传密钥。
 3. 配置新用户默认模型、每日 Token 额度和自动分配开关。没有配置时默认不为新用户授予模型权限；本地联调已设置 MiniMax-M3、每日 1,000,000 Token。
-4. 对已有用户点击“配置”：选择可用模型和额度。点击“仅保存权限”立即改变网关权限；“保存并下发”同时更新运行中的 DSH。停用不要求 DSH 在线。
+4. 保存新用户默认模型和额度后，可点击“下发至所有用户”：系统用已保存的默认配置覆盖全部已有普通用户的模型权限和额度，逐个启动停止的实例、等待健康检查后下发；单个失败不会中断后续用户。仍可在用户列表中单独配置例外权限和额度。
 5. “下发时设为默认”是可选操作，默认不勾选。新注册且启用默认分配的用户会自动下发并设置平台默认模型。用户仍可以在 DSH 添加或选用自己的模型。
 6. 重置用户平台凭证会立即拒绝旧凭证；随后“保存并下发”将新凭证写入 DSH。重置凭证不清零已用额度。
 7. 查看按用户、模型和日期汇总的输入/输出 Token、扣减/预留、请求数、失败数及待核实数。子用户在 Portal 的“模型网关”页可查看自己的多时段、多模型用量和明细，不能筛选或读取其他用户数据。
@@ -80,6 +80,7 @@ node --env-file=.env scripts/start-gateway.mjs
 | `POST /api/admin/gateway/models` | 新增/编辑模型：`id? name baseUrl upstreamModel apiKey? maxOutputTokens enabled` |
 | `POST /api/admin/gateway/models/:id/sync` | 重试同步模型到 Bifrost |
 | `POST /api/admin/gateway/settings` | `{enabled, defaults:{enabled,dailyTokens,models:[模型ID]}}` |
+| `POST /api/admin/gateway/sync-all` | 将已保存的默认权限和额度应用并下发至全部普通用户，停止实例自动启动 |
 | `POST /api/admin/gateway/users/:id` | `{enabled,dailyTokens,models:[模型ID]}` |
 | `POST /api/admin/gateway/users/:id/sync` | `{setDefault?:boolean}`，仅下发至此用户 |
 | `POST /api/admin/gateway/users/:id/rotate` | 撤销并轮换平台凭证，不清空用量 |

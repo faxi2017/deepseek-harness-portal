@@ -1180,6 +1180,21 @@ $('#gateway-defaults').addEventListener('submit', async (e) => {
     toast('默认配置已保存', 'ok'); renderGateway()
   } catch (err) { toast(err.message, 'err') }
 })
+$('#gateway-sync-all').addEventListener('click', async (e) => {
+  const ok = await confirmModal('下发至所有用户', '将使用已保存的默认配置覆盖全部已有用户的模型权限和每日额度。停止的实例会自动启动，确定继续吗？')
+  if (!ok) return
+  const status = $('#gateway-bulk-status')
+  try {
+    status.textContent = '正在逐个启动实例并下发配置，请勿关闭页面…'
+    const result = await withButtonLoading(e.currentTarget, '正在下发…', () => api('/api/admin/gateway/sync-all', { method: 'POST' }))
+    status.textContent = `已更新 ${result.updated} 个用户，成功下发 ${result.synced} 个${result.failed ? `，失败 ${result.failed} 个，可在下方查看原因` : ''}。`
+    await renderGateway()
+    toast(result.failed ? '批量下发已完成，部分用户失败' : '已下发至所有用户', result.failed ? 'err' : 'ok')
+  } catch (err) {
+    status.textContent = err.message
+    toast(err.message, 'err')
+  }
+})
 $('#gateway-usage-filter').addEventListener('submit', (e) => { e.preventDefault(); renderGatewayUsage() })
 
 // ---- boot ----

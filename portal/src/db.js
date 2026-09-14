@@ -138,6 +138,8 @@ db.prepare("DELETE FROM personal_usage_records WHERE provider='portal-gateway'")
 const instanceColumns = new Set(db.pragma('table_info(instances)').map((row) => row.name))
 if (!instanceColumns.has('release_id')) db.exec('ALTER TABLE instances ADD COLUMN release_id INTEGER REFERENCES dsh_releases(id)')
 
+const INSTANCE_VISIT_COUNTER_V2 = 'instance_visit_counter_v2'
+
 const dshReleaseBuildColumns = new Set(db.pragma('table_info(dsh_release_builds)').map((row) => row.name))
 if (!dshReleaseBuildColumns.has('phase')) db.exec("ALTER TABLE dsh_release_builds ADD COLUMN phase TEXT NOT NULL DEFAULT 'queued'")
 if (!dshReleaseBuildColumns.has('log_tail')) db.exec("ALTER TABLE dsh_release_builds ADD COLUMN log_tail TEXT NOT NULL DEFAULT ''")
@@ -333,6 +335,18 @@ db.exec(`
 `)
 ensureConfiguredDshRelease()
 
+/** Reset the old per-request counter once before counting browser URL visits. */
+export function resetInstanceVisitCounts() {
+  if (getSetting(INSTANCE_VISIT_COUNTER_V2, '') === 'done') return false
+  db.transaction(() => {
+    db.prepare('UPDATE instances SET request_count=0').run()
+    setSetting(INSTANCE_VISIT_COUNTER_V2, 'done')
+  })()
+  return true
+}
+
+resetInstanceVisitCounts()
+
 // ---- users ----
 
 export function createUser({ email = null, username = null, name, passwordHash = null, role = 'user' }) {
@@ -472,7 +486,11 @@ export function listInstancesWithUsers() {
   ).all()
 }
 
-export function touchInstanceRequest(slug) {
+export function touchInstanceActivity(slug) {
+  db.prepare('UPDATE instances SET last_active = ? WHERE slug = ?').run(Date.now(), slug)
+}
+
+export function recordInstanceVisit(slug) {
   db.prepare(
     `UPDATE instances SET request_count = request_count + 1, last_active = ?
      WHERE slug = ?`,

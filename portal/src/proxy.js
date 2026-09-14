@@ -2,7 +2,7 @@ import httpProxy from 'http-proxy'
 import http from 'node:http'
 import { createHash } from 'node:crypto'
 import { config } from './config.js'
-import { getInstanceBySlug, getInstanceByHostPort, touchInstanceRequest, updateInstanceUnlessDeleting, userForSession } from './db.js'
+import { getInstanceBySlug, getInstanceByHostPort, touchInstanceActivity, recordInstanceVisit, updateInstanceUnlessDeleting, userForSession } from './db.js'
 import { startContainer, containerRunning, dshWebToken, waitHealthy } from './orchestrator.js'
 import { SESSION_COOKIE } from './auth.js'
 import { instanceHostPort, trustedInstanceRequest } from './routing.js'
@@ -142,6 +142,11 @@ function mayAccess(user, inst) {
   return user.id === inst.user_id
 }
 
+function isDocumentVisit(req, requestUrl) {
+  return req.method === 'GET' && requestUrl.pathname === '/'
+    && String(req.headers.accept ?? '').includes('text/html')
+}
+
 /**
  * Ensure an instance is running, starting it if it is stopped. Failed or
  * still-provisioning instances are not auto-started (those need admin).
@@ -246,8 +251,9 @@ export function setupProxy(fastify) {
       reply.code(503).type('text/plain').send('instance unavailable')
       return reply
     }
-    touchInstanceRequest(slug)
     const requestUrl = new URL(req.raw.url ?? '/', 'http://portal.invalid')
+    if (isDocumentVisit(req.raw, requestUrl)) recordInstanceVisit(slug)
+    else touchInstanceActivity(slug)
     const bootstrapRequested = requestUrl.searchParams.get('portal_bootstrap') === '1'
     const expectedCookieName = dshAuthCookieName(`127.0.0.1:${current.host_port}`)
     if (req.raw.method === 'GET' && requestUrl.pathname === '/'
@@ -308,14 +314,14 @@ export function setupProxy(fastify) {
       socket.destroy()
       return
     }
-    touchInstanceRequest(slug)
+    touchInstanceActivity(slug)
     const tracked = { socket, userId: currentUser.id, token: sessionToken, lastActivity: Date.now() }
     activeWebSockets.add(tracked)
     const markActivity = () => {
       const now = Date.now()
       if (now - tracked.lastActivity >= 60 * 1000) {
         tracked.lastActivity = now
-        touchInstanceRequest(slug)
+        touchInstanceActivity(slug)
       }
     }
     const untrack = () => {

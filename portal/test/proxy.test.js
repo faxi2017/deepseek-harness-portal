@@ -17,9 +17,21 @@ mock.module('../src/orchestrator.js', { namedExports: {
   dshWebToken: async () => webToken,
 } })
 const { config } = await import('../src/config.js')
-const { db, createUser, createInstanceRow, updateInstance } = await import('../src/db.js')
+const { db, createUser, createInstanceRow, getInstanceById, resetInstanceVisitCounts, updateInstance } = await import('../src/db.js')
 const { createSession } = await import('../src/auth.js')
 const { setupProxy } = await import('../src/proxy.js')
+
+test('visit counter migration resets legacy request counts only once', () => {
+  const userId = createUser({ email: 'legacy@example.com', name: 'Legacy' })
+  const instanceId = createInstanceRow({ userId, slug: 'legacy', containerName: 'dsh-legacy', hostPort: 27469 })
+  updateInstance(instanceId, { request_count: 935 })
+  db.prepare("DELETE FROM settings WHERE key='instance_visit_counter_v2'").run()
+  assert.equal(resetInstanceVisitCounts(), true)
+  assert.equal(getInstanceById(instanceId).request_count, 0)
+  updateInstance(instanceId, { request_count: 3 })
+  assert.equal(resetInstanceVisitCounts(), false)
+  assert.equal(getInstanceById(instanceId).request_count, 3)
+})
 
 test('real port listeners enforce ownership and origins, strip HTTP/WS credentials', async () => {
   let dshCookieName
@@ -73,7 +85,7 @@ test('real port listeners enforce ownership and origins, strip HTTP/WS credentia
     assert.equal(bootstrap.status, 303)
     assert.match(bootstrap.headers.get('set-cookie'), new RegExp(`^${dshCookieName}=`))
     assert.doesNotMatch(bootstrap.headers.get('set-cookie'), /attacker/)
-    const page = await fetch(url, { headers: { cookie: `${ownerCookie}; ${dshCookie}` } })
+    const page = await fetch(url, { headers: { cookie: `${ownerCookie}; ${dshCookie}`, accept: 'text/html' } })
     assert.equal(page.status, 200)
     assert.doesNotMatch(await page.text(), /__DSH_TRANSPORT__|__portal\/dsh-host\.js/)
     webToken = null
@@ -103,6 +115,7 @@ test('real port listeners enforce ownership and origins, strip HTTP/WS credentia
     assert.doesNotMatch(handshake, /set-cookie/i)
     assert.equal(wsHeaders.cookie, dshCookie)
     assert.equal(wsHeaders.origin, `http://127.0.0.1:${upstream.address().port}`)
+    assert.equal(getInstanceById(id).request_count, 1)
   } finally {
     await app.close()
     upstream.closeAllConnections()

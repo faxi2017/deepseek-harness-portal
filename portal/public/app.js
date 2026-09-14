@@ -503,7 +503,7 @@ async function renderStats() {
       ['用户总数', stats.users, 'users'],
       ['实例总数', stats.instances, 'server'],
       ['运行中', stats.running, 'play'],
-      ['累计请求', fmtNum(stats.totalRequests), 'refresh'],
+      ['累计访问', fmtNum(stats.totalRequests), 'refresh'],
     ]
     $('#admin-stats').innerHTML = cards.map(([label, value, ic]) => `<div class="stat-card">
       <div class="stat-label"><span class="nav-icon" data-icon="${ic}"></span> ${label}</div>
@@ -548,7 +548,7 @@ function drawInstances() {
       </tr>`
     }).join('')
   $('#instances-table').innerHTML = rows
-    ? `<div class="table-wrap"><table><thead><tr><th>实例</th><th>所属用户</th><th>状态</th><th>DSH 版本</th><th>内部端口</th><th>请求次数</th><th>最近活跃</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="table-wrap"><table><thead><tr><th>实例</th><th>所属用户</th><th>状态</th><th>DSH 版本</th><th>内部端口</th><th>访问次数</th><th>最近活跃</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<p class="empty">暂无符合条件的实例。</p>`
 }
 

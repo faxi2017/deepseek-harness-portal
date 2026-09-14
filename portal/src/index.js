@@ -9,11 +9,12 @@ import {
   db, createInstanceRow, createUser, deleteAllSessionsForUser, deleteInstance,
   deleteUser, ensureAdmin, getDshRelease, getDshUpgrade, getInstanceById, getInstanceByUserId,
   getInstanceBySlug, getInviteCode, getUserById, listDshReleases, listDshReleaseBuilds, listDshUpgrades,
-  getUserByUsername, listInstancesWithUsers, listUsers, registrationEnabled,
+  getUserByUsername, listInstancesWithUsers, listUsers, registrationEnabled, dshReleaseUsage, deleteDshRelease,
   purgeExpiredSessions, recoverInterruptedDshReleaseBuilds, recoverInterruptedDshUpgrades,
   setInviteCode, setSetting, setUserPassword, sessionForToken, updateDshRelease,
   updateInstance, updateInstanceUnlessDeleting, updateUser, userForSession,
 } from './db.js'
+import { docker, missingObject } from './docker.js'
 import {
   createSession, destroySession, hashPassword, LEGACY_SESSION_COOKIES,
   verifyCsrfToken, verifyPassword, verifyPasswordOrDummy, SESSION_COOKIE,
@@ -546,6 +547,23 @@ fastify.post('/api/admin/dsh/releases/:id', async (req, reply) => {
   if (Object.keys(fields).length === 0) return reply.code(400).send({ error: 'invalid DSH release settings' })
   updateDshRelease(release.id, fields)
   return { release: publicDshRelease(getDshRelease(release.id)) }
+})
+
+fastify.delete('/api/admin/dsh/releases/:id', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return
+  const release = getDshRelease(Number(req.params.id))
+  if (!release) return reply.code(404).send({ error: 'DSH release not found' })
+  if (release.is_default) return reply.code(409).send({ error: 'the default DSH release cannot be deleted' })
+  const usage = dshReleaseUsage(release.id)
+  if (usage.instanceCount > 0) return reply.code(409).send({ error: 'DSH release is used by an instance' })
+  if (usage.upgradeCount > 0) return reply.code(409).send({ error: 'DSH release is retained for upgrade rollback history' })
+  try {
+    await docker(['image', 'rm', release.image_id])
+  } catch (error) {
+    if (!missingObject(error)) return reply.code(409).send({ error: 'DSH image could not be deleted because Docker still uses it' })
+  }
+  deleteDshRelease(release.id)
+  return { ok: true }
 })
 
 // ---- admin: users + instances ---------------------------------------------

@@ -123,6 +123,10 @@ const ERROR_MESSAGES = {
   'DSH image build could not be started': '无法开始构建 DSH 镜像，请检查是否已有构建任务',
   'invalid DSH release settings': 'DSH 版本设置无效',
   'a default DSH release is required': '必须保留一个新用户默认 DSH 版本',
+  'the default DSH release cannot be deleted': '当前默认容器版本不能删除，请先将其他版本设为默认',
+  'DSH release is used by an instance': '仍有用户容器正在使用此版本，不能删除',
+  'DSH release is retained for upgrade rollback history': '此版本仍用于升级回退记录，不能删除',
+  'DSH image could not be deleted because Docker still uses it': 'Docker 仍在使用此镜像，暂时不能删除',
   'registrationEnabled must be boolean': '注册设置无效，请刷新页面后重新设置',
   'not found': '该用户或实例不存在，请刷新页面',
   'cannot delete an admin account': '不能删除管理员账号',
@@ -958,11 +962,11 @@ async function renderDshVersions() {
       : '构建完成不会自动升级用户实例；请从“实例管理”逐个或分批操作。'
     $('#dsh-build-form').querySelector('button').disabled = Boolean(active)
     $('#dsh-releases').innerHTML = data.releases.length
-      ? `<div class="table-wrap"><table><thead><tr><th>版本</th><th>镜像 ID</th><th>新用户默认</th><th>个人自助升级</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${data.releases.map((release) => `<tr>
-          <td>${escapeHtml(dshVersionLabel(release))}</td><td class="cell-mono">${escapeHtml(release.imageId.slice(0, 19))}…</td>
-          <td>${release.isDefault ? '是' : '否'}</td><td>${release.selfService ? '已开放' : '仅管理员'}</td><td>${fmtDate(release.createdAt)}</td>
+      ? `<div class="table-wrap"><table><thead><tr><th>版本</th><th>镜像 ID</th><th>默认容器版本</th><th>个人自助升级</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${data.releases.map((release) => `<tr>
+          <td>${escapeHtml(dshVersionLabel(release))}${release.isDefault ? ' <span class="badge badge-running">当前默认</span>' : ''}</td><td class="cell-mono">${escapeHtml(release.imageId.slice(0, 19))}…</td>
+          <td>${release.isDefault ? '是（新建容器使用）' : '否'}</td><td>${release.selfService ? '已开放' : '仅管理员'}</td><td>${fmtDate(release.createdAt)}</td>
           <td><div class="cell-actions">${release.isDefault ? '' : `<button class="btn btn-ghost btn-sm" data-dsh-release="${release.id}" data-dsh-release-action="default">设为默认</button>`}
-          <button class="btn btn-ghost btn-sm" data-dsh-release="${release.id}" data-dsh-release-action="self">${release.selfService ? '关闭自助' : '开放自助'}</button></div></td>
+          <button class="btn btn-ghost btn-sm" data-dsh-release="${release.id}" data-dsh-release-action="self">${release.selfService ? '关闭自助' : '开放自助'}</button>${release.isDefault ? '' : `<button class="btn btn-danger btn-sm" data-dsh-release="${release.id}" data-dsh-release-action="delete">删除镜像</button>`}</div></td>
         </tr>`).join('')}</tbody></table></div>`
       : '<p class="empty">尚无可用的 DSH 镜像版本。</p>'
     $('#dsh-builds').innerHTML = data.builds.length
@@ -987,7 +991,18 @@ $('#dsh-releases').addEventListener('click', async (e) => {
   if (!button) return
   const release = dshReleasesCache.find((item) => String(item.id) === button.dataset.dshRelease)
   if (!release) return
-  const isDefault = button.dataset.dshReleaseAction === 'default'
+  const action = button.dataset.dshReleaseAction
+  if (action === 'delete') {
+    const ok = await confirmModal('删除历史 DSH 镜像', `将删除 DSH ${dshVersionLabel(release)} 的镜像，且无法恢复。仍被容器使用、用于升级回退或作为默认版本的镜像不能删除。`, '删除镜像', true)
+    if (!ok) return
+    try {
+      await withButtonLoading(button, '正在删除…', () => api(`/api/admin/dsh/releases/${release.id}`, { method: 'DELETE' }))
+      toast('历史 DSH 镜像已删除', 'ok')
+      renderDshVersions()
+    } catch (err) { toast(err.message, 'err') }
+    return
+  }
+  const isDefault = action === 'default'
   try {
     await withButtonLoading(button, '正在保存…', () => api(`/api/admin/dsh/releases/${release.id}`, {
       method: 'POST', body: isDefault ? { isDefault: true } : { selfService: !release.selfService },

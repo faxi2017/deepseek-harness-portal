@@ -185,6 +185,19 @@ export function updateDshRelease(id, fields) {
   return run()
 }
 
+export function dshReleaseUsage(id) {
+  const releaseId = Number(id)
+  return {
+    instanceCount: db.prepare('SELECT count(*) AS count FROM instances WHERE release_id=?').get(releaseId).count,
+    upgradeCount: db.prepare(`SELECT count(*) AS count FROM dsh_upgrade_history
+      WHERE from_release_id=? OR to_release_id=?`).get(releaseId, releaseId).count,
+  }
+}
+
+export function deleteDshRelease(id) {
+  return db.prepare('DELETE FROM dsh_releases WHERE id=?').run(Number(id)).changes === 1
+}
+
 export function createDshRelease({ version, imageId, createdBy = null }) {
   const existing = getDshReleaseByImage(imageId)
   if (existing) return existing

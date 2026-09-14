@@ -26,13 +26,21 @@ mock.module('../src/orchestrator.js', { namedExports: {
   startContainer: async () => {}, stopContainer: async () => {}, verifyDockerRuntime: async () => {},
   uninstallInstancePlugin: async () => ({ plugins: [], updatedAt: Date.now(), recovered: true }),
 } })
+const removedImages = []
+mock.module('../src/docker.js', { namedExports: {
+  docker: async (args) => { removedImages.push(args); return { stdout: '', stderr: '' } },
+  missingObject: () => false,
+} })
 const { fastify } = await import('../src/index.js')
 if (!fastify.server.listening) await once(fastify.server, 'listening')
-const { createDshRelease, createUser, db, getUserByUsername, setSetting, setInviteCode, updateDshRelease } = await import('../src/db.js')
+const { createDshRelease, createDshUpgrade, createInstanceRow, createUser, db, deleteInstance, getDshRelease, getUserByUsername, setSetting, setInviteCode, updateDshRelease } = await import('../src/db.js')
 const origin = process.env.PORTAL_ORIGIN
 const post = (path, body, headers = {}) => fetch(origin + path, { method: 'POST', headers: {
   'content-type': 'application/json', origin, ...headers,
 }, body: JSON.stringify(body) })
+const del = (path, headers = {}) => fetch(origin + path, { method: 'DELETE', headers: {
+  'content-type': 'application/json', origin, ...headers,
+}, body: '{}' })
 test.beforeEach(() => db.prepare('DELETE FROM auth_rate_limits').run())
 test.after(async () => { await fastify.close(); db.close(); rmSync(dataDir, { recursive: true, force: true }) })
 
@@ -218,4 +226,27 @@ test('DSH release inventory is admin-only and a user sees only versions explicit
   updateDshRelease(release.id, { self_service: 1 })
   const opened = await fetch(origin + '/api/instance', { headers: { cookie: userCookie } }).then((r) => r.json())
   assert.ok(opened.releases.some((item) => item.id === release.id))
+})
+
+test('only an unused, non-default DSH image can be deleted', async () => {
+  const defaultRelease = createDshRelease({ version: '8.8.9', imageId: `sha256:${'c'.repeat(64)}` })
+  const removable = createDshRelease({ version: '8.9.0', imageId: `sha256:${'d'.repeat(64)}` })
+  const guarded = createDshRelease({ version: '8.9.1', imageId: `sha256:${'e'.repeat(64)}` })
+  const rollbackOnly = createDshRelease({ version: '8.9.2', imageId: `sha256:${'f'.repeat(64)}` })
+  const userId = createUser({ username: 'release-guard-user', name: 'Release Guard', passwordHash: 'x' })
+  const instanceId = createInstanceRow({ userId, slug: 'release-guard', containerName: 'dsh-release-guard', hostPort: 19999, releaseId: guarded.id })
+  createDshUpgrade({ instanceId, fromReleaseId: rollbackOnly.id, toReleaseId: guarded.id, operation: 'upgrade', requestedBy: userId })
+  const adminLogin = await post('/api/auth/login', { username: 'admin', password: process.env.ADMIN_PASSWORD })
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminSession = await adminLogin.json()
+  const auth = { cookie: adminCookie, 'x-csrf-token': adminSession.csrfToken }
+
+  assert.equal((await post(`/api/admin/dsh/releases/${defaultRelease.id}`, { isDefault: true }, auth)).status, 200)
+  assert.equal((await del(`/api/admin/dsh/releases/${defaultRelease.id}`, auth)).status, 409)
+  assert.equal((await del(`/api/admin/dsh/releases/${guarded.id}`, auth)).status, 409)
+  assert.equal((await del(`/api/admin/dsh/releases/${rollbackOnly.id}`, auth)).status, 409)
+  assert.equal((await del(`/api/admin/dsh/releases/${removable.id}`, auth)).status, 200)
+  assert.equal(getDshRelease(removable.id), null)
+  assert.ok(removedImages.some((args) => args.join(' ') === `image rm ${removable.image_id}`))
+  deleteInstance(instanceId)
 })

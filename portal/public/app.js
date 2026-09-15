@@ -178,6 +178,14 @@ async function withButtonLoading(btn, loadingText, fn) {
   try { return await fn() } finally { btn.disabled = false; btn.innerHTML = original }
 }
 
+async function confirmedButtonAction(event, { title, message, actionLabel = '删除', danger = true }, loadingText, fn) {
+  // Event.currentTarget is cleared by the browser after an await. Capture it before opening the modal.
+  const button = event.currentTarget
+  if (!button) throw new Error('操作按钮已失效，请刷新页面后重试')
+  if (!await confirmModal(title, message, actionLabel, danger)) return { confirmed: false }
+  return { confirmed: true, result: await withButtonLoading(button, loadingText, fn) }
+}
+
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
@@ -1191,12 +1199,19 @@ $('#gateway-defaults').addEventListener('submit', async (e) => {
   } catch (err) { toast(err.message, 'err') }
 })
 $('#gateway-sync-all').addEventListener('click', async (e) => {
-  const ok = await confirmModal('下发至所有用户', '将使用已保存的默认配置覆盖全部已有用户的模型权限和每日额度。停止的实例会自动启动，确定继续吗？', '确认下发', false)
-  if (!ok) return
   const status = $('#gateway-bulk-status')
   try {
-    status.textContent = '正在逐个启动实例并下发配置，请勿关闭页面…'
-    const result = await withButtonLoading(e.currentTarget, '正在下发…', () => api('/api/admin/gateway/sync-all', { method: 'POST' }))
+    const action = await confirmedButtonAction(e, {
+      title: '下发至所有用户',
+      message: '将使用已保存的默认配置覆盖全部已有用户的模型权限和每日额度。停止的实例会自动启动，确定继续吗？',
+      actionLabel: '确认下发',
+      danger: false,
+    }, '正在下发…', () => {
+      status.textContent = '正在逐个启动实例并下发配置，请勿关闭页面…'
+      return api('/api/admin/gateway/sync-all', { method: 'POST' })
+    })
+    if (!action.confirmed) return
+    const result = action.result
     status.textContent = `已更新 ${result.updated} 个用户，成功下发 ${result.synced} 个${result.failed ? `，失败 ${result.failed} 个，可在下方查看原因` : ''}。`
     await renderGateway(false)
     toast(result.failed ? '批量下发已完成，部分用户失败' : '已下发至所有用户', result.failed ? 'err' : 'ok')

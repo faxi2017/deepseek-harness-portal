@@ -98,8 +98,23 @@ test('user restart keeps its button reference after confirmation and sends the r
   assert.equal(button.innerHTML, '退出登录')
 })
 
-test('bulk model issue confirmation is a primary issue action, not a delete action', () => {
-  assert.match(source, /confirmModal\('下发至所有用户',[\s\S]*?'确认下发', false\)/)
+test('confirmed button actions capture their target before awaiting the modal', () => {
+  assert.match(source, /const button = event\.currentTarget[\s\S]*?if \(!await confirmModal\(/)
+  assert.match(source, /confirmedButtonAction\(e, \{[\s\S]*?actionLabel: '确认下发',[\s\S]*?danger: false,/)
+})
+
+test('bulk model issue keeps its original button after confirmation closes', async () => {
+  const { elements, requests } = await setup(async () => ({ ok: true, json: async () => ({ updated: 1, synced: 1, failed: 0 }) }))
+  const button = elements.get('#gateway-sync-all')
+  const event = { currentTarget: button }
+  const pending = button.listeners.click(event)
+  event.currentTarget = null
+  elements.get('#modal-root').button.listeners.click()
+  await pending
+  const issue = requests.find((request) => request.url === '/api/admin/gateway/sync-all')
+  assert.equal(issue.options.method, 'POST')
+  assert.equal(button.disabled, false)
+  assert.equal(button.innerHTML, '退出登录')
 })
 
 for (const failure of ['csrf', 'network']) {

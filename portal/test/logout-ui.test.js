@@ -98,6 +98,10 @@ test('user restart keeps its button reference after confirmation and sends the r
   assert.equal(button.innerHTML, '退出登录')
 })
 
+test('bulk model issue confirmation is a primary issue action, not a delete action', () => {
+  assert.match(source, /confirmModal\('下发至所有用户',[\s\S]*?'确认下发', false\)/)
+})
+
 for (const failure of ['csrf', 'network']) {
   test(`logout ${failure} failure stays on the page and restores the button`, async () => {
     const { forms, navigations, elements } = await setup(async () => {

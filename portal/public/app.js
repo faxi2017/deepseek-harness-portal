@@ -1191,7 +1191,7 @@ $('#gateway-defaults').addEventListener('submit', async (e) => {
   } catch (err) { toast(err.message, 'err') }
 })
 $('#gateway-sync-all').addEventListener('click', async (e) => {
-  const ok = await confirmModal('下发至所有用户', '将使用已保存的默认配置覆盖全部已有用户的模型权限和每日额度。停止的实例会自动启动，确定继续吗？')
+  const ok = await confirmModal('下发至所有用户', '将使用已保存的默认配置覆盖全部已有用户的模型权限和每日额度。停止的实例会自动启动，确定继续吗？', '确认下发', false)
   if (!ok) return
   const status = $('#gateway-bulk-status')
   try {
